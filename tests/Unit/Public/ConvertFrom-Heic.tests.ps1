@@ -1,5 +1,5 @@
 BeforeAll {
-    $script:moduleName = 'PSHeic'
+    $script:moduleName = 'PSImageConverter'
     Import-Module -Name $script:moduleName
 
     $script:fixture = Join-Path -Path $PSScriptRoot -ChildPath '../../assets/sample.heic'

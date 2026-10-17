@@ -92,11 +92,18 @@ BuildWorkflow:
   #merge:
   #- Merge_CodeCoverage_Files
 
+  # The CHANGELOG update for a release goes through a pull request, because main is protected.
   publish:
     - Publish_Release_To_GitHub
-    - Update_Changelog_Direct
     - publish_module_to_gallery
     - Publish_GitHub_Wiki_Content
+    - Create_ChangeLog_GitHub_PR
+
+  # Pre-releases from the dev branch: GitHub pre-release + PowerShell Gallery pre-release.
+  # No CHANGELOG commit and no wiki update, those stay with the releases from main.
+  publish_prerelease:
+    - Publish_Release_To_GitHub
+    - publish_module_to_gallery
 
 ####################################################
 #       PESTER  Configuration                      #

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - dev
     paths-ignore:
       - "**/CHANGELOG.md"
       - "**/README.md"
@@ -15,6 +16,12 @@ defaults:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Two quick pushes to the same branch must not publish in parallel: the second run would compute
+# its version before the first one has created its tag.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   test:
     if: github.actor != 'github-actions[bot]' # Exclude commits made by GitHub Actions bot
@@ -23,7 +30,7 @@ jobs:
   build-and-publish:
     needs: test
     runs-on: ubuntu-latest
-    environment: release # PSGALLERY_API_KEY is an environment secret scoped to main
+    environment: release # PSGALLERY_API_KEY is an environment secret scoped to main and dev
     permissions:
       contents: write # Required for Update_Changelog_Direct to push to main
     steps:
@@ -49,4 +56,4 @@ jobs:
           GalleryApiToken: ${{ secrets.PSGALLERY_API_KEY }}
           GitHubToken: ${{ github.token }}
         run: |
-          ./build.ps1 -ResolveDependency -Task publish
+          ./build.ps1 -ResolveDependency -Task ${{ github.ref_name == 'main' && 'publish' || 'publish_prerelease' }}

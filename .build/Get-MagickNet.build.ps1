@@ -44,7 +44,7 @@ task Get_MagickNet {
             Invoke-WebRequest -Uri $uri -OutFile $nupkg -UseBasicParsing
             [System.IO.Compression.ZipFile]::ExtractToDirectory($nupkg, $extractPath)
 
-            # netstandard2.0 assemblies load in both Windows PowerShell 5.1 (.NET Framework 4.7.2+) and PowerShell 7.
+            # netstandard2.0 assemblies load in every PowerShell 7 release, whatever .NET version it runs on.
             $netStandardFolder = Get-ChildItem -Path (Join-Path -Path $extractPath -ChildPath 'lib') -Directory |
                 Where-Object -FilterScript { $_.Name -match '^netstandard2\.?0$' } |
                     Select-Object -First 1
@@ -61,7 +61,7 @@ task Get_MagickNet {
             {
                 Copy-Item -Path $runtimesPath -Destination $libPath -Recurse
 
-                # 32-bit Windows is not supported by PSHeic, keep the package small.
+                # 32-bit Windows is not supported by PSImageConverter, keep the package small.
                 Remove-Item -Path (Join-Path -Path $libPath -ChildPath 'runtimes/win-x86') -Recurse -Force -ErrorAction SilentlyContinue
             }
 

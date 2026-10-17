@@ -1,4 +1,4 @@
-function Convert-PSHeicImage
+function Convert-ImageConverterImage
 {
     <#
         .SYNOPSIS
@@ -25,7 +25,7 @@ function Convert-PSHeicImage
         Removes all profiles and comments (EXIF, XMP, ICC, ...) from the output.
 
         .EXAMPLE
-        Convert-PSHeicImage -SourcePath 'C:\Pictures\IMG_1234.HEIC' -TargetPath 'C:\Pictures\IMG_1234.jpg' -Format Jpeg -Quality 90
+        Convert-ImageConverterImage -SourcePath 'C:\Pictures\IMG_1234.HEIC' -TargetPath 'C:\Pictures\IMG_1234.jpg' -Format Jpeg -Quality 90
     #>
     [CmdletBinding()]
     [OutputType([System.Void])]

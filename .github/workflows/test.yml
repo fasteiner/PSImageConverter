@@ -3,8 +3,9 @@ name: Test
 on:
   pull_request:
   push:
-    branches-ignore:
+    branches-ignore: # publish.yml runs the tests for these branches
       - main
+      - dev
   workflow_call:
 
 defaults:
@@ -16,19 +17,14 @@ env:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }}, ${{ matrix.shell }})
+    name: Test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            shell: pwsh
-          - os: macos-latest
-            shell: pwsh
-          - os: windows-latest
-            shell: pwsh
-          - os: windows-latest
-            shell: powershell
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
@@ -41,16 +37,7 @@ jobs:
         with:
           versionSpec: "5.x"
 
-      - name: Build and test (PowerShell 7)
-        if: matrix.shell == 'pwsh'
-        shell: pwsh
-        run: |
-          & ./build.ps1 -ResolveDependency -Tasks build, test *>&1 | Tee-Object -FilePath build.log
-          exit $LASTEXITCODE
-
-      - name: Build and test (Windows PowerShell 5.1)
-        if: matrix.shell == 'powershell'
-        shell: powershell
+      - name: Build and test
         run: |
           & ./build.ps1 -ResolveDependency -Tasks build, test *>&1 | Tee-Object -FilePath build.log
           exit $LASTEXITCODE
@@ -90,6 +77,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ matrix.os }}-${{ matrix.shell }}
+          name: test-results-${{ matrix.os }}
           path: output/testResults/
           if-no-files-found: ignore

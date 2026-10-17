@@ -1,4 +1,4 @@
-function Resolve-PSHeicOutputPath
+function Resolve-ImageConverterOutputPath
 {
     <#
         .SYNOPSIS
@@ -23,7 +23,7 @@ function Resolve-PSHeicOutputPath
         Allows overwriting an existing output file instead of throwing an error.
 
         .EXAMPLE
-        Resolve-PSHeicOutputPath -SourcePath 'C:\Pictures\IMG_1234.HEIC' -Extension '.jpg'
+        Resolve-ImageConverterOutputPath -SourcePath 'C:\Pictures\IMG_1234.HEIC' -Extension '.jpg'
     #>
     [CmdletBinding()]
     [OutputType([System.String])]

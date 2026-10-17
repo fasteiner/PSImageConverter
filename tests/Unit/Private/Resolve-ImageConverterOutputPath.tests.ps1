@@ -1,5 +1,5 @@
 BeforeAll {
-    $script:moduleName = 'PSHeic'
+    $script:moduleName = 'PSImageConverter'
     Import-Module -Name $script:moduleName
 }
 
@@ -7,7 +7,7 @@ AfterAll {
     Get-Module -Name $script:moduleName -All | Remove-Module -Force
 }
 
-Describe 'Resolve-PSHeicOutputPath' {
+Describe 'Resolve-ImageConverterOutputPath' {
     BeforeEach {
         $script:tempDir = New-Item -ItemType Directory -Path (Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ([System.Guid]::NewGuid().ToString()))
         $script:source = Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0001.HEIC'
@@ -19,7 +19,7 @@ Describe 'Resolve-PSHeicOutputPath' {
 
     It 'Should place the output next to the source file by default' {
         $result = InModuleScope -ModuleName $script:moduleName -Parameters @{ Source = $script:source } {
-            Resolve-PSHeicOutputPath -SourcePath $Source -Extension '.jpg'
+            Resolve-ImageConverterOutputPath -SourcePath $Source -Extension '.jpg'
         }
 
         $result | Should -Be (Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0001.jpg')
@@ -29,7 +29,7 @@ Describe 'Resolve-PSHeicOutputPath' {
         $destination = Join-Path -Path $script:tempDir.FullName -ChildPath 'out'
 
         $result = InModuleScope -ModuleName $script:moduleName -Parameters @{ Source = $script:source; Destination = $destination } {
-            Resolve-PSHeicOutputPath -SourcePath $Source -Extension '.png' -DestinationPath $Destination
+            Resolve-ImageConverterOutputPath -SourcePath $Source -Extension '.png' -DestinationPath $Destination
         }
 
         $result | Should -Be (Join-Path -Path $destination -ChildPath 'IMG_0001.png')
@@ -41,7 +41,7 @@ Describe 'Resolve-PSHeicOutputPath' {
 
         {
             InModuleScope -ModuleName $script:moduleName -Parameters @{ Source = $script:source } {
-                Resolve-PSHeicOutputPath -SourcePath $Source -Extension '.jpg'
+                Resolve-ImageConverterOutputPath -SourcePath $Source -Extension '.jpg'
             }
         } | Should -Throw -ExpectedMessage '*already exists*'
     }
@@ -51,7 +51,7 @@ Describe 'Resolve-PSHeicOutputPath' {
         Set-Content -Path $existing -Value 'x'
 
         $result = InModuleScope -ModuleName $script:moduleName -Parameters @{ Source = $script:source } {
-            Resolve-PSHeicOutputPath -SourcePath $Source -Extension '.jpg' -Force
+            Resolve-ImageConverterOutputPath -SourcePath $Source -Extension '.jpg' -Force
         }
 
         $result | Should -Be $existing

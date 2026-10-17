@@ -1,5 +1,5 @@
 BeforeAll {
-    $script:moduleName = 'PSHeic'
+    $script:moduleName = 'PSImageConverter'
     Import-Module -Name $script:moduleName
 
     $script:fixture = (Resolve-Path -Path (Join-Path -Path $PSScriptRoot -ChildPath '../../assets/sample.heic')).ProviderPath
@@ -15,8 +15,8 @@ Describe 'Get-HeicInfo' {
             $script:result = Get-HeicInfo -Path $script:fixture
         }
 
-        It 'Should return a PSHeic.ImageInfo object' {
-            $script:result.PSObject.TypeNames | Should -Contain 'PSHeic.ImageInfo'
+        It 'Should return a PSImageConverter.ImageInfo object' {
+            $script:result.PSObject.TypeNames | Should -Contain 'PSImageConverter.ImageInfo'
         }
 
         It 'Should report the HEIC format' {

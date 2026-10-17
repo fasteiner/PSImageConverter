@@ -1,4 +1,4 @@
-function ConvertFrom-PSHeicExifProfile
+function ConvertFrom-ImageConverterExifProfile
 {
     <#
         .SYNOPSIS
@@ -14,7 +14,7 @@ function ConvertFrom-PSHeicExifProfile
         The EXIF profile as returned by MagickImage.GetExifProfile(). May be null.
 
         .EXAMPLE
-        ConvertFrom-PSHeicExifProfile -ExifProfile $image.GetExifProfile()
+        ConvertFrom-ImageConverterExifProfile -ExifProfile $image.GetExifProfile()
     #>
     [CmdletBinding()]
     [OutputType([System.Collections.Hashtable])]

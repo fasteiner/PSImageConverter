@@ -1,5 +1,5 @@
 BeforeAll {
-    $script:moduleName = 'PSHeic'
+    $script:moduleName = 'PSImageConverter'
     Import-Module -Name $script:moduleName
 }
 
@@ -7,10 +7,10 @@ AfterAll {
     Get-Module -Name $script:moduleName -All | Remove-Module -Force
 }
 
-Describe 'ConvertFrom-PSHeicExifProfile' {
+Describe 'ConvertFrom-ImageConverterExifProfile' {
     It 'Should return an empty hashtable for a missing profile' {
         $result = InModuleScope -ModuleName $script:moduleName {
-            ConvertFrom-PSHeicExifProfile -ExifProfile $null
+            ConvertFrom-ImageConverterExifProfile -ExifProfile $null
         }
 
         $result | Should -BeOfType [System.Collections.Hashtable]
@@ -26,7 +26,7 @@ Describe 'ConvertFrom-PSHeicExifProfile' {
         $exifProfile = [PSCustomObject] @{ Values = $values }
 
         $result = InModuleScope -ModuleName $script:moduleName -Parameters @{ ExifProfile = $exifProfile } {
-            ConvertFrom-PSHeicExifProfile -ExifProfile $ExifProfile
+            ConvertFrom-ImageConverterExifProfile -ExifProfile $ExifProfile
         }
 
         $result['Make'] | Should -Be 'Apple'

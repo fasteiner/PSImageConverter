@@ -1,15 +1,21 @@
-# PSHeic
+# PSImageConverter
 
-Cross-platform PowerShell module for converting HEIC/HEIF images (e.g. iPhone photos) to JPEG, PNG, WebP and more, powered by [Magick.NET](https://github.com/dlemstra/Magick.NET).
+Cross-platform PowerShell 7 module for converting HEIC/HEIF images (e.g. iPhone photos) to JPEG, PNG, WebP and more, powered by [Magick.NET](https://github.com/dlemstra/Magick.NET).
 
-- Works on Windows PowerShell 5.1 and PowerShell 7 on Windows, Linux and macOS
+- Works on PowerShell 7.4 or later on Windows, Linux and macOS (x64 and arm64; Alpine/musl Linux: x64 only)
 - No codecs or ImageMagick installation needed — the native library is bundled
 - Pipeline-friendly, applies the EXIF orientation, keeps metadata unless you strip it
 
 ## Installation
 
 ```powershell
-Install-Module -Name PSHeic -Scope CurrentUser
+Install-Module -Name PSImageConverter -Scope CurrentUser
+```
+
+Pre-releases are published from the `dev` branch (e.g. `0.2.0-preview0007`):
+
+```powershell
+Install-Module -Name PSImageConverter -Scope CurrentUser -AllowPrerelease
 ```
 
 ## Usage
@@ -45,4 +51,4 @@ The module is built with [Sampler](https://github.com/gaelcolas/Sampler). See [C
 
 ## License
 
-PSHeic is licensed under the [GPL-3.0](LICENSE). It bundles Magick.NET and ImageMagick, which are licensed under the Apache License 2.0 and the ImageMagick License; their notices are shipped in the module's `lib` folder.
+PSImageConverter is licensed under the [GPL-3.0](LICENSE). It bundles Magick.NET and ImageMagick, which are licensed under the Apache License 2.0 and the ImageMagick License; their notices are shipped in the module's `lib` folder.

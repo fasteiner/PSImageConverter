@@ -1,4 +1,4 @@
-function Get-PSHeicRuntimeIdentifier
+function Get-ImageConverterRuntimeIdentifier
 {
     <#
         .SYNOPSIS
@@ -20,7 +20,7 @@ function Get-PSHeicRuntimeIdentifier
         Indicates a Linux distribution based on the musl C library (e.g. Alpine).
 
         .EXAMPLE
-        Get-PSHeicRuntimeIdentifier -Platform Linux -Architecture Arm64
+        Get-ImageConverterRuntimeIdentifier -Platform Linux -Architecture Arm64
     #>
     [CmdletBinding()]
     [OutputType([System.String])]
@@ -29,54 +29,37 @@ function Get-PSHeicRuntimeIdentifier
         [Parameter()]
         [ValidateSet('Windows', 'Linux', 'OSX')]
         [System.String]
-        $Platform = $(
-            if ($PSVersionTable.PSEdition -eq 'Desktop' -or $IsWindows)
-            {
-                'Windows'
-            }
-            elseif ($IsMacOS)
-            {
-                'OSX'
-            }
-            else
-            {
-                'Linux'
-            }
-        ),
+        $Platform,
 
         [Parameter()]
         [ValidateSet('X64', 'Arm64', 'X86')]
         [System.String]
-        $Architecture = $(
-            if ($PSVersionTable.PSEdition -eq 'Desktop')
-            {
-                if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64')
-                {
-                    'Arm64'
-                }
-                elseif ([System.Environment]::Is64BitProcess)
-                {
-                    'X64'
-                }
-                else
-                {
-                    'X86'
-                }
-            }
-            else
-            {
-                [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
-            }
-        ),
+        $Architecture = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString(),
 
         [Parameter()]
         [System.Management.Automation.SwitchParameter]
         $IsMusl = (Test-Path -Path '/etc/alpine-release')
     )
 
+    if (-not $PSBoundParameters.ContainsKey('Platform'))
+    {
+        if ($IsWindows)
+        {
+            $Platform = 'Windows'
+        }
+        elseif ($IsMacOS)
+        {
+            $Platform = 'OSX'
+        }
+        else
+        {
+            $Platform = 'Linux'
+        }
+    }
+
     if ($Architecture -eq 'X86')
     {
-        throw '32-bit processes are not supported by PSHeic. Please use a 64-bit PowerShell.'
+        throw '32-bit processes are not supported by PSImageConverter. Please use a 64-bit PowerShell.'
     }
 
     $arch = $Architecture.ToLowerInvariant()

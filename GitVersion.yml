@@ -9,18 +9,26 @@ branches:
   master:
     # tag: preview
     regex: ^main$
+  develop:
+    # Every push to dev is published as a pre-release, so each commit needs its own version
+    # (preview0001, preview0002, ...); ContinuousDelivery would repeat it until a tag exists.
+    regex: ^dev$
+    mode: ContinuousDeployment
+    tag: preview
+    increment: Minor
+    source-branches: ["master"]
   pull-request:
     tag: PR
   feature:
     tag: useBranchName
     increment: Minor
     regex: f(eature(s)?)?[\/-]
-    source-branches: ["master"]
+    source-branches: ["develop", "master"]
   hotfix:
     tag: fix
     increment: Patch
     regex: (hot)?fix(es)?[\/-]
-    source-branches: ["master"]
+    source-branches: ["develop", "master"]
 
 ignore:
   sha: []

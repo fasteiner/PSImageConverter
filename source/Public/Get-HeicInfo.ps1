@@ -45,10 +45,10 @@ function Get-HeicInfo
 
                 try
                 {
-                    $exif = ConvertFrom-PSHeicExifProfile -ExifProfile $image.GetExifProfile()
+                    $exif = ConvertFrom-ImageConverterExifProfile -ExifProfile $image.GetExifProfile()
 
                     [PSCustomObject] @{
-                        PSTypeName  = 'PSHeic.ImageInfo'
+                        PSTypeName  = 'PSImageConverter.ImageInfo'
                         Path        = $sourcePath
                         Format      = $image.Format.ToString()
                         Width       = [System.Int32] $image.Width
@@ -56,7 +56,7 @@ function Get-HeicInfo
                         Orientation = $image.Orientation.ToString()
                         CameraMake  = $exif['Make']
                         CameraModel = $exif['Model']
-                        DateTaken   = ConvertTo-PSHeicDateTime -Value $exif['DateTimeOriginal']
+                        DateTaken   = ConvertTo-ImageConverterDateTime -Value $exif['DateTimeOriginal']
                         HasExif     = $exif.Count -gt 0
                         FileSize    = (Get-Item -LiteralPath $sourcePath).Length
                     }

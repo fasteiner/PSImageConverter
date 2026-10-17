@@ -56,7 +56,7 @@
     "workbench.iconTheme": "vscode-icons",
     "terminal.integrated.bracketedPasteMode": false,
     "terminal.integrated.profiles.linux": {
-        "PSHeic pwsh": {
+        "PSImageConverter pwsh": {
             "path": "pwsh",
             "args": [
                 "-NoExit",
@@ -65,9 +65,9 @@
             ]
         }
     },
-    "terminal.integrated.defaultProfile.linux": "PSHeic pwsh",
+    "terminal.integrated.defaultProfile.linux": "PSImageConverter pwsh",
     "terminal.integrated.profiles.windows": {
-        "PSHeic pwsh": {
+        "PSImageConverter pwsh": {
             "source": "PowerShell",
             "args": [
                 "-NoExit",
@@ -76,5 +76,5 @@
             ]
         }
     },
-    "terminal.integrated.defaultProfile.windows": "PSHeic pwsh"
+    "terminal.integrated.defaultProfile.windows": "PSImageConverter pwsh"
 }

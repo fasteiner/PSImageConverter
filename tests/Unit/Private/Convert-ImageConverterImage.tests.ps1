@@ -1,5 +1,5 @@
 BeforeAll {
-    $script:moduleName = 'PSHeic'
+    $script:moduleName = 'PSImageConverter'
     Import-Module -Name $script:moduleName
 
     $script:fixture = (Resolve-Path -Path (Join-Path -Path $PSScriptRoot -ChildPath '../../assets/sample.heic')).ProviderPath
@@ -9,7 +9,7 @@ AfterAll {
     Get-Module -Name $script:moduleName -All | Remove-Module -Force
 }
 
-Describe 'Convert-PSHeicImage' {
+Describe 'Convert-ImageConverterImage' {
     BeforeEach {
         $script:tempDir = New-Item -ItemType Directory -Path (Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ([System.Guid]::NewGuid().ToString()))
     }
@@ -26,7 +26,7 @@ Describe 'Convert-PSHeicImage' {
         $target = Join-Path -Path $script:tempDir.FullName -ChildPath "out$Extension"
 
         InModuleScope -ModuleName $script:moduleName -Parameters @{ Source = $script:fixture; Target = $target; Format = $Format } {
-            Convert-PSHeicImage -SourcePath $Source -TargetPath $Target -Format $Format -Quality 50 -StripMetadata
+            Convert-ImageConverterImage -SourcePath $Source -TargetPath $Target -Format $Format -Quality 50 -StripMetadata
         }
 
         Test-Path -Path $target | Should -BeTrue
@@ -39,7 +39,7 @@ Describe 'Convert-PSHeicImage' {
 
         {
             InModuleScope -ModuleName $script:moduleName -Parameters @{ Source = $textFile; Target = (Join-Path -Path $script:tempDir.FullName -ChildPath 'out.jpg') } {
-                Convert-PSHeicImage -SourcePath $Source -TargetPath $Target -Format Jpeg
+                Convert-ImageConverterImage -SourcePath $Source -TargetPath $Target -Format Jpeg
             }
         } | Should -Throw
     }

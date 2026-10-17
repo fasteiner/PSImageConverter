@@ -1,4 +1,4 @@
-function ConvertTo-PSHeicDateTime
+function ConvertTo-ImageConverterDateTime
 {
     <#
         .SYNOPSIS
@@ -13,7 +13,7 @@ function ConvertTo-PSHeicDateTime
         The EXIF date string to parse, e.g. '2026:10:17 18:21:00'.
 
         .EXAMPLE
-        ConvertTo-PSHeicDateTime -Value '2026:10:17 18:21:00'
+        ConvertTo-ImageConverterDateTime -Value '2026:10:17 18:21:00'
     #>
     [CmdletBinding()]
     [OutputType([System.DateTime])]

@@ -105,7 +105,7 @@ function ConvertFrom-Heic
                     throw [System.ArgumentException]::new("The file '$sourcePath' is not a HEIC/HEIF image (.heic, .heif, .hif).")
                 }
 
-                $targetPath = Resolve-PSHeicOutputPath -SourcePath $sourcePath -Extension $extensions[$Format] -DestinationPath $DestinationPath -Force:$Force
+                $targetPath = Resolve-ImageConverterOutputPath -SourcePath $sourcePath -Extension $extensions[$Format] -DestinationPath $DestinationPath -Force:$Force
 
                 if ($PSCmdlet.ShouldProcess($sourcePath, "Convert to $Format '$targetPath'"))
                 {
@@ -115,7 +115,7 @@ function ConvertFrom-Heic
                         $null = New-Item -Path $targetFolder -ItemType Directory -Force
                     }
 
-                    Convert-PSHeicImage -SourcePath $sourcePath -TargetPath $targetPath -Format $Format -Quality $Quality -StripMetadata:$StripMetadata
+                    Convert-ImageConverterImage -SourcePath $sourcePath -TargetPath $targetPath -Format $Format -Quality $Quality -StripMetadata:$StripMetadata
 
                     Get-Item -LiteralPath $targetPath
                 }
