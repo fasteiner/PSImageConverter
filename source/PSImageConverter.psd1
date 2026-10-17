@@ -30,7 +30,7 @@
     Copyright            = '(c) Ing. Fabian Steiner BSc. All rights reserved.'
 
     # Description of the functionality provided by this module
-    Description          = 'Cross-platform PowerShell 7 module for converting images such as HEIC/HEIF photos to JPEG, PNG, WebP, AVIF and more, powered by Magick.NET. Pipeline-friendly and keeps EXIF metadata.'
+    Description          = 'Cross-platform PowerShell 7 module for converting images such as HEIC/HEIF photos to JPEG, PNG, WebP, AVIF and more, powered by Magick.NET. Pipeline-friendly; keeps the EXIF metadata in JPEG, PNG, WebP, AVIF and JPEG XL output.'
 
     # Minimum version of the PowerShell engine required by this module
     PowerShellVersion    = '7.4'

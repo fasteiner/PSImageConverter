@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Overview
 
-`PSImageConverter` is a PowerShell 7 module (7.4 or later, Windows/Linux/macOS; Windows PowerShell 5.1 is not supported) that converts HEIC/HEIF images using a bundled [Magick.NET](https://github.com/dlemstra/Magick.NET). The project is scaffolded with [Sampler](https://github.com/gaelcolas/Sampler) and built via InvokeBuild, with the same pipeline as `fasteiner/Xurrent-Helpers`.
+`PSImageConverter` is a PowerShell 7 module (7.4 or later, Windows/Linux/macOS; Windows PowerShell 5.1 is not supported) that converts images (HEIC/HEIF and everything else Magick.NET reads) to JPEG, PNG, WebP, AVIF, JPEG XL, TIFF, BMP or GIF using a bundled [Magick.NET](https://github.com/dlemstra/Magick.NET). The project is scaffolded with [Sampler](https://github.com/gaelcolas/Sampler) and built via InvokeBuild, with the same pipeline as `fasteiner/Xurrent-Helpers`.
 
 ## Build Commands
 
@@ -34,6 +34,7 @@ Invoke-Pester -Path tests\Unit\Public\ConvertFrom-Heic.tests.ps1   # single file
     PSImageConverter.psm1 ← empty stub; rebuilt by ModuleBuilder
   tests/
     assets/      ← sample.heic fixture (see tests/assets/README.md)
+    Helpers/     ← New-TestImage.ps1: writes test images with EXIF/XMP/IPTC/ICC/CMYK/thumbnail data
     Unit/Public/, Unit/Private/
     QA/          ← module-level quality tests (PSSA, help, changelog)
 ```
@@ -48,11 +49,18 @@ Code coverage: Sampler's Pester task imports the built module before `Invoke-Pes
 
 ## Conventions
 
-- Exported cmdlets use the `Heic` noun (`ConvertFrom-Heic`, `Get-HeicInfo`); private helpers use the `ImageConverter` noun prefix (`Resolve-ImageConverterOutputPath`).
+- Exported cmdlets: `Convert-Image`, the `ConvertTo-<Format>` shortcuts, `ConvertFrom-Heic` and `Get-ImageInfo`; private helpers use the `ImageConverter` noun prefix (`Resolve-ImageConverterOutputPath`).
 - Never use backtick line continuation; use splatting or natural line breaks.
 - Every function (public and private) needs `.SYNOPSIS`, `.DESCRIPTION` > 40 chars, an `.EXAMPLE` with its name, `.PARAMETER` descriptions > 25 chars, a passing PSScriptAnalyzer run and a `tests/Unit/…/<Name>.tests.ps1`.
 - Code coverage threshold is **85%** (`build.yaml`).
 - Update `CHANGELOG.md` under `## [Unreleased]` with every change.
+
+### Errors and wrappers
+
+- Report every failure through `Write-ImageConverterError` (`$PSCmdlet.WriteError()` with a stable error id and the source path as target), so `$?` is `$false` and `-ErrorVariable` gets one record per failure.
+- Call .NET methods that can throw through `Invoke-ImageConverterMethod`, which returns the exception instead of throwing it: an exception that reaches script code is recorded in `$Error` and `-ErrorVariable` again, even when a `catch` handles it.
+- Compare existing files by `Get-ImageConverterFileIdentity`, not by path strings; path strings (`Get-ImageConverterPathComparer`) are only for files that may not exist yet.
+- Wrappers (`ConvertTo-*`, `ConvertFrom-Heic`) build the steppable pipeline to `Convert-Image` in their own `begin` block (in a helper, `Convert-Image` would no longer find the private functions) and pass their parameters through `Get-ImageConverterForwardedParameter`, which drops `-ErrorVariable`, `-OutVariable`, `-PipelineVariable` and the like.
 
 ## CI / Release
 

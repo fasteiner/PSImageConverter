@@ -17,6 +17,11 @@ After step 1 (local run on Windows only; the resolver-only loading on Windows ha
 - 114 tests pass, coverage 83.59 %.
 - `.github/workflows/test.yml` contains a temporary "Report failures as annotations" step (added for remote debugging) — remove it once CI is green.
 
+After step 2 and the fixes from its review (local run on Windows and in the Linux devcontainer; the whole suite on macOS runs in CI only):
+
+- Windows: 586 tests pass, 1 skipped (Linux only), coverage 96.95 %.
+- Linux devcontainer (pwsh 7.6.7, Ubuntu 24.04): 573 pass, 14 skipped (Windows-only and case-insensitive-volume tests), coverage 95.69 %.
+
 ## 1. Rename module to PSImageConverter ✅
 
 Done. Native loading uses the DllImport resolver on every platform now; `SetNativeLibraryDirectory` is gone. Initialisation runs under a process-wide lock (concurrent first imports in thread jobs broke Magick.NET for the whole process).
@@ -28,15 +33,38 @@ Done. Native loading uses the DllImport resolver on every platform now; `SetNati
 - `PSTypeName` `PSHeic.ImageInfo` → `PSImageConverter.ImageInfo`.
 - `git grep -i psheic -- ':!PLAN.md'` must return nothing afterwards.
 
-## 2. Generalise the cmdlets
+## 2. Generalise the cmdlets ✅
+
+Done (without `Heic` output, see step 3: Magick.NET 14.17.2 cannot write HEIC, "no encode delegate"). Exported: `Convert-Image`, `ConvertTo-Jpeg`, `ConvertTo-Png`, `ConvertTo-WebP`, `ConvertTo-Avif`, `ConvertTo-JpegXL`, `ConvertFrom-Heic`, `Get-ImageInfo`; `Get-HeicInfo` is removed (never released, no alias).
+
+- `-Path` (wildcards) and `-LiteralPath` (aliases `PSPath`, `LP`; `Get-ChildItem` output binds here) on every public cmdlet; folders in the input are skipped, non-FileSystem paths get `UnsupportedProvider`.
+- Errors through `$PSCmdlet.WriteError()` with stable ids (`PathNotFound`, `InvalidWildcardPattern`, `UnsupportedProvider`, `NotHeicFile`, `InvalidDestinationPath`, `DestinationNotDirectory`, `TargetIsSource`, `DuplicateTarget`, `TargetExists`, `ImageReadFailed`, `ImageWriteFailed`) and the source path as target: `$?` is `$false`, one record per failure in `-ErrorVariable`. Exceptions never reach script code (`Invoke-ImageConverterMethod`, which also returns out parameters), otherwise PowerShell records them a second time.
+- `TargetIsSource` and `DuplicateTarget` also with `-Force`; `-Force` overwrites only files that existed before the call, and clears ReadOnly/Hidden first (restored when the file cannot be replaced). An existing target is compared with the source and with this call's outputs by file identity (`Get-ImageConverterFileIdentity`: volume serial + file id on Windows, device + inode on Unix), so junctions, symbolic links, subst/mapped drives, UNC paths, `\\?\`, 8.3 names and case-insensitive volumes on Linux are covered. Input paths are normalised with `GetFullPath` (8.3 names expanded).
+- Writing goes through a temporary file `.<16 hex>.tmp` in the target folder, written through a .NET stream (ImageMagick does not see the name, so `%d`/`%x` in names and long target paths work) and moved over the target; the temporary file is deleted in `finally`, also when the pipeline is stopped. A source name ending in `[n]` is read from a stream (ImageMagick would take it as a frame selector).
+- The written file is returned as the FileSystem provider returns it (PSPath), so `ConvertTo-Png 'a[1].heic' | Get-ImageInfo` binds `-LiteralPath`.
+- After auto-orient the EXIF thumbnail is removed and the XMP `tiff:Orientation` / pixel dimensions are updated; CMYK sources are converted to sRGB through their profile for every format except Jpeg and Tiff.
+- `-StripMetadata` keeps the ICC profile (also for PNG); Tiff/Gif/Bmp output warns when EXIF is lost; per-format metadata is documented in the `Convert-Image` help and the README.
+- `ConvertFrom-Heic` and the `ConvertTo-*` wrappers forward their whole pipeline through a steppable pipeline to one `Convert-Image` call. `ConvertTo-*` start it with `Begin($PSCmdlet)` and pass `$_` on; `ConvertFrom-Heic` resolves the paths itself (extension check; files that are targets of this call are skipped) and starts it with `Begin($true, $ExecutionContext)`. The `*Variable` and `OutBuffer` common parameters are not forwarded (`Get-ImageConverterForwardedParameter`); the wrapper applies them.
+
+Deferred / open:
+
+- Errors raised inside `Convert-Image` have the FullyQualifiedErrorId `<Id>,Convert-Image` (and display as "Convert-Image:") also when the user called a wrapper; only the input checks of `ConvertFrom-Heic` report `,ConvertFrom-Heic`. Comes with the steppable pipeline.
+- `Get-ImageInfo` output cannot be piped into the conversion cmdlets: its `Path` property matches neither `PSPath` nor `LP`.
+- Source paths over 260 characters on Windows still fail to read (a clean `ImageReadFailed` record): ImageMagick opens the source by name. Writing goes through .NET and works for long target paths.
+- `-WhatIf` predicts `TargetIsSource`/`DuplicateTarget` by path string only; an alias of a folder (junction, symlink, UNC) or a case-insensitive volume on Linux is only detected in the real run, by file identity, when the target exists.
+- Hard links of one file share the identity: converting one onto the other is refused as `TargetIsSource` although replacing the link would not touch the source.
+- Coverage: the `{ Convert-Image @convertParameters }` command in each wrapper counts as missed (a steppable pipeline never runs the script block); 6 misses. Moving the pipeline creation into a shared helper does not work: `Convert-Image` then no longer finds the private functions. The stream dispose in the `finally` block of `Convert-ImageConverterImage` runs only in the Ctrl+C test's own runspace, which coverage does not measure.
+- The whole suite has not run on macOS yet (CI only).
+
+Original step-2 plan (the Done summary above describes what was implemented):
 
 | Cmdlet             | Behaviour |
 | ------------------ | --------- |
-| `Convert-Image`    | Any readable source → `-Format`. Same parameters as today's `ConvertFrom-Heic` (`-Path` pipeline, `-Format`, `-Quality`, `-DestinationPath`, `-StripMetadata`, `-Force`, `-WhatIf`). Throws if target path == source path. Logic moves here from `ConvertFrom-Heic`. |
+| `Convert-Image`    | Any readable source → `-Format`. Same parameters as today's `ConvertFrom-Heic` (`-Path` pipeline, `-Format`, `-Quality`, `-DestinationPath`, `-StripMetadata`, `-Force`, `-WhatIf`). Target == source gives a non-terminating `TargetIsSource` error, also with `-Force`. Logic moves here from `ConvertFrom-Heic`. |
 | `ConvertFrom-Heic` | Thin wrapper: validates `.heic/.heif/.hif`, then calls `Convert-Image`. Default format Jpeg. |
 | `ConvertTo-Jpeg`, `ConvertTo-Png`, `ConvertTo-WebP`, `ConvertTo-Avif`, `ConvertTo-JpegXL` | Thin wrappers: any readable source → `Convert-Image -Format Jpeg/Png/WebP/Avif/Jxl`. Same parameters as `Convert-Image` minus `-Format`; `ConvertTo-Png` has no `-Quality` (lossless). |
-| `ConvertTo-Heic`   | New — see step 3. Same wrapper shape as the other `ConvertTo-*`. |
-| `Get-ImageInfo`    | Renamed from `Get-HeicInfo` (same output). |
+| `ConvertTo-Heic`   | Not in step 2 — see step 3. Same wrapper shape as the other `ConvertTo-*`. |
+| `Get-ImageInfo`    | Renamed from `Get-HeicInfo`; `Orientation` `Undefined` is reported as `TopLeft`. |
 
 `ConvertTo-*` wrappers:
 
@@ -44,7 +72,7 @@ Done. Native loading uses the DllImport resolver on every platform now; `SetNati
 - Pass the bound parameters through to `Convert-Image` (splatting), so pipeline input (`Get-ChildItem | ConvertTo-WebP`), `-WhatIf`/`-Confirm` and errors behave exactly like `Convert-Image`.
 - Each gets its own help (with an example per wrapper) and `tests/Unit/Public/ConvertTo-<Format>.tests.ps1`: output extension and re-read format, pipeline input, `-WhatIf`, `-Quality` where it applies, and that a source already in the target format (e.g. `ConvertTo-Jpeg` on a `.jpg` without `-DestinationPath`) fails with the same-path error instead of overwriting the source.
 
-Behaviour found by the interactive tests in step 1 (already present before it; fix while writing `Convert-Image` / `Get-ImageInfo`, each with a Pester test):
+Behaviour found by the interactive tests in step 1 (original notes, all fixed in step 2; e.g. the `-LiteralPath` aliases became `PSPath` and `LP`, without `FullName`):
 
 - Tiff, Gif and Bmp output silently drop EXIF without `-StripMetadata` (Jpeg, Png, WebP, Avif keep it), contrary to help/README. Document per format and warn.
 - With `-Force`, sources sharing a base name (`x.heic` + `x.heif`, or `-Recurse` into one `-DestinationPath`) overwrite each other's output. `-Force` should only overwrite files that existed before the call.
@@ -55,18 +83,37 @@ Behaviour found by the interactive tests in step 1 (already present before it; f
 - `Orientation` is reported as `Undefined` or `TopLeft` for upright images depending on the format; normalise it.
 - Low priority: `-DestinationPath` that points at a file or contains invalid characters ends in raw Magick errors; non-FileSystem provider paths reach Magick unrooted; paths over 260 characters fail inside Magick on Windows.
 
-Formats (`ValidateSet` + extension map): `Jpeg .jpg`, `Png .png`, `WebP .webp`, `Avif .avif`, `Jxl .jxl`, `Heic .heic`, `Tiff .tif`, `Bmp .bmp`, `Gif .gif`.
-Quality applies to lossy formats: Jpeg, WebP, Avif, Jxl, Heic.
+Formats (`ValidateSet` + extension map): `Jpeg .jpg`, `Png .png`, `WebP .webp`, `Avif .avif`, `Jxl .jxl`, `Tiff .tif`, `Bmp .bmp`, `Gif .gif` (`Heic .heic` follows in step 3).
+Quality applies to lossy formats: Jpeg, WebP, Avif, Jxl (and Heic in step 3).
 
-## 3. ConvertTo-Heic — verify first, then implement
+## 3. ConvertTo-Heic — encoders of the operating system
 
-1. Add a test that dumps `[ImageMagick.MagickNET]::SupportedFormats | Where-Object Format -in 'Heic','Avif','Jxl','WebP'` with `SupportsReading` / `SupportsWriting` and run it in CI on all runners. **Do not assume** — record the result in the PR description.
-2. If Magick.NET can write Heic: `ConvertTo-Heic` = `Convert-Image -Format Heic`. Done.
-3. If not (expected): **ask Fabian before implementing** — proposed fallback:
-   - Windows: encode via WIC (`Windows.Graphics.Imaging.BitmapEncoder.HeifEncoderId`; reference: DavidAnson/ConvertTo-Heic). Requires Windows 10 1809+ and the "HEVC Video Extensions" from the Store; give a clear error when missing.
-   - Linux/macOS: terminating error that explains the limitation and suggests `-Format Avif`.
-   - `Convert-Image -Format Heic` uses the same path.
-   - Tests for the WIC path run only on Windows (`-Skip:(-not $IsWindows)`) and must skip gracefully when the HEVC extension is absent on the runner.
+Verified: the bundled Magick.NET 14.17.2 reads HEIC/HEIF but cannot write it (`SupportsWriting = False`, "no encode delegate for this image format `HEIC'"). It does write Jxl and Avif.
+
+HEIC is written with the encoder the operating system or distribution provides. The module ships nothing HEVC-related (HEVC patent pools, x265 licence); the encoder is the user's installation.
+
+| Platform | Encoder | Requirement on the user's machine | CI |
+| -------- | ------- | --------------------------------- | -- |
+| Windows  | WIC HEIF encoder (`GUID_ContainerFormatHeif`; reference: DavidAnson/ConvertTo-Heic) | Windows 10 1809+ and the "HEVC Video Extensions" from the Store | runner has no HEVC extension: test skips |
+| macOS    | ImageIO (`CGImageDestinationCreateWithURL`, type `public.heic`) | none (macOS 10.13+) | `macos-latest` |
+| Linux    | system `libheif` via P/Invoke (`heif_context_get_encoder_for_format(heif_compression_HEVC)`) | `libheif1` + x265 plugin, e.g. `sudo apt install libheif1 libheif-plugin-x265` (verified on Ubuntu 24.04: libheif 1.17.6, x265 3.5) | `ubuntu-latest`, CI installs the packages |
+
+- `ConvertTo-Heic` is a wrapper like the other `ConvertTo-*`; `Convert-Image -Format Heic` uses the same path (Heic joins the format list with `.heic`, lossy, so `-Quality` applies).
+- Magick.NET decodes and auto-orients; the pixels go to the OS encoder as an RGB(A) buffer. EXIF and the ICC profile are passed on where the encoder API allows it; document per platform what is kept.
+- Encoder missing → error per item (stable id, e.g. `HeicEncoderNotAvailable`) that names what to install on this platform and suggests `-Format Avif`.
+- C# helper assembly (one small DLL in `lib`, target `net8.0` = PowerShell 7.4): the native resolver plus the three encoder bindings, built with `dotnet build` by a task in `.build/`, loaded with `Add-Type -LiteralPath`. It also takes the three classes that are compiled at runtime today: the native resolver (`Add-Type -TypeDefinition` on every import), `PSImageConverter.SafeInvoker` (`Invoke-ImageConverterMethod`) and `PSImageConverter.FileIdentity` (`Get-ImageConverterFileIdentity`, Windows), both compiled on the first conversion; `Add-ImageConverterType` then goes away. After step 2 on Windows: import ~1.1 s, first conversion of a 64x64 image ~0.65 s. The build then needs the .NET SDK (GitHub runners and the devcontainer have it).
+- Windows binding: prefer classic COM WIC (`IWICImagingFactory`, `IWICBitmapEncoder` with `GUID_ContainerFormatHeif`) over `Windows.Graphics.Imaging`: WinRT projections are not built into .NET 5+ and would need CsWinRT / the large Windows SDK projection assembly.
+- Windows path is tested locally: Fabian's machine has the HEVC Video Extension 2.5.48, the HEIF Image Extension 1.2.62 and hardware HEVC encoders (Intel Arc, NVIDIA RTX 500), so the WIC test runs in every local `./build.ps1 -Tasks test`. GitHub-hosted Windows runners cannot provide it (no Store, no GPU; downloading the paid extension from the Store CDN is a licence grey zone) and Docker cannot either (Windows containers have no AppX, Media Foundation codecs or GPU). No self-hosted runner: the Windows path stays a local test.
+- README (same commit as the code, so it never promises more than the module does):
+  - section "Writing HEIC files": why the module ships no HEVC encoder (patents, x265 licence) and uses the one of the operating system;
+    the platform table above as user instructions — Windows: install "HEVC Video Extensions" from the Microsoft Store (Windows 10 1809+);
+    macOS: nothing to install; Linux: install commands per distribution (Ubuntu/Debian `sudo apt install libheif1 libheif-plugin-x265`,
+    Fedora `libheif-freeworld` from RPM Fusion, Arch `libheif` + `x265`, Alpine `libheif` + `x265`; verify the non-Ubuntu package names before writing them down);
+    what the error says when the encoder is missing, and `-Format Avif` as the patent-free alternative in the same HEIF container;
+  - format table: Heic becomes writable "with the OS encoder", with the per-platform requirement;
+  - Development section: the Windows HEIC test only runs where the HEVC extension is installed (locally, not on GitHub-hosted runners, not in Docker), the CI installs libheif on ubuntu-latest, macOS uses ImageIO; the C# helper is built with `dotnet build`, so building needs the .NET SDK.
+- about_PSImageConverter.help.txt gets the same platform requirements in short form.
+- Tests: one per platform path, `-Skip` when the encoder is not available (and assert the error message in that case); a test that records `[ImageMagick.MagickNET]::SupportedFormats` read/write support for Heic, Avif, Jxl, WebP on every runner (put the result in the PR description).
 
 ## 4. Fix CI
 
@@ -75,9 +122,9 @@ Quality applies to lossy formats: Jpeg, WebP, Avif, Jxl, Heic.
 
 ## 5. Docs and release
 
-- README: new name, cmdlet table, format table, HEIC-writing support matrix from step 3.
-- CHANGELOG `[Unreleased]`: describe the module as PSImageConverter (no release under the PSHeic name happened).
-- CLAUDE.md: update names, architecture tree and cmdlet conventions.
+- README: new name, cmdlet table, format table (with per-format metadata) ✅ in step 2; HEIC-writing support matrix from step 3 still open.
+- CHANGELOG `[Unreleased]`: describe the module as PSImageConverter (no release under the PSHeic name happened) ✅ in step 2; add step 3.
+- CLAUDE.md: update names, architecture tree and cmdlet conventions ✅ in step 2 (review fixes); add step 3.
 - Branch flow: `feature/initial-module` → `dev` (every push to `dev` publishes a pre-release to GitHub and the PSGallery) → `main` (release). **Push to `dev` and merge to `main` only after Fabian's OK** — both publish via the `release` environment.
 - `main` and `dev` have classic branch protection (PR required, checks `Test (ubuntu-latest)`, `Test (macos-latest)`, `Test (windows-latest)`), so the `dev` branch has to be created from a PR-able state: create it from `main`, then open a PR `feature/initial-module` → `dev`.
 - After the first release from `main`, merge the CHANGELOG PR opened by `Create_ChangeLog_GitHub_PR` (as admin; its checks do not run). Requires the repo setting "Allow GitHub Actions to create and approve pull requests".

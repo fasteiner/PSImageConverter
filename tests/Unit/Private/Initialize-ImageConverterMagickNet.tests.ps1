@@ -35,7 +35,7 @@ Describe 'Initialize-ImageConverterMagickNet' {
                     param ($ManifestPath, $Fixture)
 
                     Import-Module -Name $ManifestPath
-                    (Get-HeicInfo -Path $Fixture -ErrorAction Stop).Width
+                    (Get-ImageInfo -Path $Fixture -ErrorAction Stop).Width
                 }
             }
 
@@ -43,7 +43,7 @@ Describe 'Initialize-ImageConverterMagickNet' {
 
             # A failed native load is cached for the lifetime of the process, so a later call shows it.
             Import-Module -Name $ManifestPath
-            'after: {0}' -f (Get-HeicInfo -Path $Fixture -ErrorAction Stop).Width
+            'after: {0}' -f (Get-ImageInfo -Path $Fixture -ErrorAction Stop).Width
         } -args $manifestPath, $fixture 2>&1
 
         <#

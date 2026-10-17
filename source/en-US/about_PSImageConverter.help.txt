@@ -2,25 +2,94 @@ TOPIC
     about_PSImageConverter
 
 SHORT DESCRIPTION
-    Cross-platform conversion of HEIC/HEIF images, powered by Magick.NET.
+    Cross-platform image conversion (HEIC/HEIF and more), powered by Magick.NET.
 
 LONG DESCRIPTION
-    PSImageConverter converts HEIC/HEIF images (for example photos taken with
-    an iPhone) to JPEG, PNG, WebP, TIFF, BMP, GIF or AVIF and reads their
-    metadata. The Magick.NET library and its native ImageMagick build are
+    PSImageConverter converts images, for example HEIC/HEIF photos taken with
+    an iPhone, to JPEG, PNG, WebP, AVIF, JPEG XL, TIFF, BMP or GIF and reads
+    their metadata. The Magick.NET library and its native ImageMagick build are
     bundled with the module, so no codecs need to be installed. It requires
     PowerShell 7.4 or later and runs on Windows, Linux and macOS (x64 and
     arm64; on Alpine/musl Linux x64 only).
 
-    Writing HEIC files is not supported, because the bundled ImageMagick build
-    does not contain an HEVC encoder.
+    Cmdlets:
+
+        Convert-Image     Converts every format Magick.NET can read to the
+                          -Format Jpeg, Png, WebP, Avif, Jxl (JPEG XL), Tiff,
+                          Bmp or Gif.
+        ConvertTo-Jpeg    Convert-Image -Format Jpeg.
+        ConvertTo-Png     Convert-Image -Format Png (lossless, no -Quality).
+        ConvertTo-WebP    Convert-Image -Format WebP.
+        ConvertTo-Avif    Convert-Image -Format Avif.
+        ConvertTo-JpegXL  Convert-Image -Format Jxl.
+        ConvertFrom-Heic  Converts .heic/.heif/.hif files only; -Format
+                          defaults to Jpeg.
+        Get-ImageInfo     Returns the format, dimensions, orientation, camera
+                          and date taken of images.
+
+    The conversion cmdlets take -Path (wildcards) or -LiteralPath (aliases
+    PSPath and LP; files piped from Get-ChildItem; folders are skipped),
+    -DestinationPath, -Quality (1 to 100, default 90, for Jpeg, WebP, Avif and
+    Jxl), -StripMetadata, -Force, -WhatIf and -Confirm, and return a FileInfo
+    object for every written file, the same object Get-Item returns, so it can
+    be piped into the next cmdlet. The output gets the base name of the source
+    and the extension of the format (.jpg, .png, .webp, .avif, .jxl, .tif,
+    .bmp, .gif). A conversion never overwrites its source file or a file
+    written earlier in the same call, also not when the folder is reached
+    through another path (a junction, a symbolic link, a subst or mapped
+    drive, a UNC path), and never leaves a truncated or temporary file behind,
+    also not when it is stopped with Ctrl+C.
+
+METADATA
+    The EXIF orientation is applied to the pixels, so the output is upright.
+    Without -StripMetadata the output keeps the metadata its format can carry:
+
+        Jpeg, Png         EXIF, XMP, IPTC, ICC colour profile, comments
+        WebP, Avif, Jxl   EXIF, XMP, ICC colour profile
+        Tiff              XMP, IPTC, ICC colour profile, comments
+        Gif               IPTC, ICC colour profile, comments
+        Bmp               ICC colour profile
+
+    Tiff, Gif and Bmp output gets no EXIF data (date taken, camera, GPS
+    location); a warning is written for every source with EXIF data unless
+    -StripMetadata is used.
+    -StripMetadata removes EXIF (including the GPS location), XMP, IPTC and
+    comments but keeps the ICC colour profile, so photos keep their colours.
+
+    When the orientation is applied, an EXIF thumbnail is removed (it would
+    show rotated against the photo), and the XMP orientation and pixel
+    dimensions are updated.
+
+    CMYK images (e.g. print JPEGs) stay CMYK with their colour profile in Jpeg
+    and Tiff output; for the other formats they are converted to sRGB through
+    their CMYK profile.
+
+    Writing HEIC files is not supported yet, because the bundled ImageMagick
+    build does not contain an HEVC encoder. AVIF is the closest alternative.
+
+ERRORS
+    Errors are non-terminating: the cmdlets continue with the next file, $? is
+    $false afterwards and -ErrorAction Stop stops at the first one. Every error
+    has a stable id: PathNotFound, InvalidWildcardPattern (use -LiteralPath for
+    a name such as 'a[.jpg'), UnsupportedProvider, NotHeicFile,
+    InvalidDestinationPath, DestinationNotDirectory, TargetIsSource,
+    DuplicateTarget, TargetExists, ImageReadFailed and ImageWriteFailed.
+    ConvertFrom-Heic and the ConvertTo-* cmdlets pass all files of one call to
+    a single Convert-Image, so the errors it finds have the
+    FullyQualifiedErrorId '<Id>,Convert-Image'.
 
 EXAMPLES
     PS C:\> ConvertFrom-Heic -Path .\IMG_1234.HEIC
 
     PS C:\> Get-ChildItem -Path C:\Pictures -Filter *.heic | ConvertFrom-Heic -Format Png
 
-    PS C:\> Get-ChildItem -Path C:\Pictures -Filter *.heic | Get-HeicInfo
+    PS C:\> Get-ChildItem -Path C:\Pictures -Filter *.jpg | ConvertTo-WebP -Quality 80 -DestinationPath C:\Pictures\web
+
+    PS C:\> ConvertTo-Avif -Path .\IMG_1234.HEIC -StripMetadata
+
+    PS C:\> Convert-Image -Path C:\Pictures\*.png -Format Tiff -WhatIf
+
+    PS C:\> Get-ChildItem -Path C:\Pictures -Filter *.heic | Get-ImageInfo
 
 NOTE:
     Thank you to all those who contributed to this module, by writing code,
@@ -31,7 +100,8 @@ TROUBLESHOOTING NOTE:
     https://github.com/fasteiner/PSImageConverter
 
 SEE ALSO
+    - Get-Help Convert-Image -Full
     - https://github.com/dlemstra/Magick.NET
 
 KEYWORDS
-    HEIC, HEIF, Image, Conversion, JPEG, PNG, WebP, ImageMagick
+    HEIC, HEIF, Image, Conversion, JPEG, PNG, WebP, AVIF, JpegXL, ImageMagick
