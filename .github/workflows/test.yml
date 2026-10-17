@@ -45,13 +45,37 @@ jobs:
         if: matrix.shell == 'pwsh'
         shell: pwsh
         run: |
-          ./build.ps1 -ResolveDependency -Tasks build, test
+          & ./build.ps1 -ResolveDependency -Tasks build, test *>&1 | Tee-Object -FilePath build.log
+          exit $LASTEXITCODE
 
       - name: Build and test (Windows PowerShell 5.1)
         if: matrix.shell == 'powershell'
         shell: powershell
         run: |
-          ./build.ps1 -ResolveDependency -Tasks build, test
+          & ./build.ps1 -ResolveDependency -Tasks build, test *>&1 | Tee-Object -FilePath build.log
+          exit $LASTEXITCODE
+
+      - name: Report failures as annotations
+        if: failure()
+        shell: pwsh
+        run: |
+          $results = Get-ChildItem -Path output/testResults -Filter *.xml -Recurse -ErrorAction SilentlyContinue
+          foreach ($file in $results)
+          {
+              [xml] $xml = Get-Content -Path $file.FullName -Raw
+              $failed = $xml.SelectNodes('//test-case[@result="Failure" or @result="Failed"]') | Select-Object -First 15
+              foreach ($case in $failed)
+              {
+                  $message = ("$($case.name): $($case.failure.message)" -replace '%', '%25' -replace "`r", '' -replace "`n", '%0A')
+                  Write-Output "::error title=Test failed::$message"
+              }
+          }
+          if (Test-Path -Path build.log)
+          {
+              $tail = (Get-Content -Path build.log -Tail 80) -join "`n"
+              $tail = $tail -replace '%', '%25' -replace "`r", '' -replace "`n", '%0A'
+              Write-Output "::error title=Build log tail::$tail"
+          }
 
       - name: Upload test results
         if: always()
