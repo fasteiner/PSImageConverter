@@ -1,0 +1,36 @@
+TOPIC
+    about_PSHeic
+
+SHORT DESCRIPTION
+    Cross-platform conversion of HEIC/HEIF images, powered by Magick.NET.
+
+LONG DESCRIPTION
+    PSHeic converts HEIC/HEIF images (for example photos taken with an iPhone)
+    to JPEG, PNG, WebP, TIFF, BMP, GIF or AVIF and reads their metadata. The
+    Magick.NET library and its native ImageMagick build are bundled with the
+    module, so no codecs need to be installed. It runs on Windows PowerShell 5.1
+    and on PowerShell 7 on Windows, Linux and macOS (x64 and arm64).
+
+    Writing HEIC files is not supported, because the bundled ImageMagick build
+    does not contain an HEVC encoder.
+
+EXAMPLES
+    PS C:\> ConvertFrom-Heic -Path .\IMG_1234.HEIC
+
+    PS C:\> Get-ChildItem -Path C:\Pictures -Filter *.heic | ConvertFrom-Heic -Format Png
+
+    PS C:\> Get-ChildItem -Path C:\Pictures -Filter *.heic | Get-HeicInfo
+
+NOTE:
+    Thank you to all those who contributed to this module, by writing code,
+    sharing opinions, and provided feedback.
+
+TROUBLESHOOTING NOTE:
+    Look out on the GitHub repository for issues and new releases:
+    https://github.com/fasteiner/PSHeic
+
+SEE ALSO
+    - https://github.com/dlemstra/Magick.NET
+
+KEYWORDS
+    HEIC, HEIF, Image, Conversion, JPEG, PNG, WebP, ImageMagick

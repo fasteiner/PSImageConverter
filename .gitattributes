@@ -13,3 +13,7 @@
 *.png binary
 *.dll binary
 *.so  binary
+*.heic binary
+*.heif binary
+*.webp binary
+*.dylib binary

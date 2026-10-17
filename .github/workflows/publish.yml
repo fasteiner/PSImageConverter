@@ -1,0 +1,52 @@
+name: Publish
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**/CHANGELOG.md"
+      - "**/README.md"
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test:
+    if: github.actor != 'github-actions[bot]' # Exclude commits made by GitHub Actions bot
+    uses: ./.github/workflows/test.yml
+
+  build-and-publish:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: release # PSGALLERY_API_KEY is an environment secret scoped to main
+    permissions:
+      contents: write # Required for Update_Changelog_Direct to push to main
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # Required for GitVersion
+
+      - name: Install GitVersion
+        uses: GitTools/actions/gitversion/setup@v3.1.1
+        with:
+          versionSpec: "5.x"
+
+      - name: chmod build.ps1
+        run: chmod +x build.ps1
+
+      - name: Package Module
+        run: |
+          ./build.ps1 -ResolveDependency -Task pack
+
+      - name: Publish Module
+        env:
+          GalleryApiToken: ${{ secrets.PSGALLERY_API_KEY }}
+          GitHubToken: ${{ github.token }}
+        run: |
+          ./build.ps1 -ResolveDependency -Task publish
