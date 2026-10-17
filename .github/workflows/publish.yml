@@ -32,7 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: release # PSGALLERY_API_KEY is an environment secret scoped to main and dev
     permissions:
-      contents: write # Required for Update_Changelog_Direct to push to main
+      contents: write # Release, tag and the CHANGELOG branch
+      pull-requests: write # Create_ChangeLog_GitHub_PR opens the CHANGELOG pull request
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
