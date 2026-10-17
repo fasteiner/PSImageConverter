@@ -42,6 +42,9 @@ Convert-Image -Path .\IMG_1234.HEIC -Format Tiff
 
 # Inspect photos, sorted by the date they were taken
 Get-ChildItem -Path C:\Pictures -Filter *.heic | Get-ImageInfo | Sort-Object -Property DateTaken
+
+# Convert only the photos wider than 4000 pixels
+Get-ImageInfo -Path .\*.heic | Where-Object -Property Width -GT 4000 | ConvertTo-Jpeg -Quality 85
 ```
 
 | Cmdlet             | Purpose                                                                                     |
@@ -53,9 +56,13 @@ Get-ChildItem -Path C:\Pictures -Filter *.heic | Get-ImageInfo | Sort-Object -Pr
 | `ConvertTo-Avif`   | `Convert-Image -Format Avif`, same parameters without `-Format`                             |
 | `ConvertTo-JpegXL` | `Convert-Image -Format Jxl`, same parameters without `-Format`                              |
 | `ConvertFrom-Heic` | Converts HEIC/HEIF files only (`.heic`, `.heif`, `.hif`); `-Format` defaults to Jpeg        |
-| `Get-ImageInfo`    | Returns format, size, orientation, camera and date taken of an image                        |
+| `Get-ImageInfo`    | Returns format, size, orientation, camera and date taken of an image; pipes into the others |
 
-All conversion cmdlets take `-Path` (wildcards, strings from the pipeline) or `-LiteralPath` (aliases `PSPath` and `LP`; files from `Get-ChildItem`; folders are skipped), `-DestinationPath`, `-StripMetadata`, `-Force`, `-WhatIf` and `-Confirm`, and return a `FileInfo` for every written file — the same object `Get-Item` returns, so it can be piped into the next cmdlet even when its name contains `[` or `]`. The output gets the source's base name and the extension of the format, next to the source or in `-DestinationPath`.
+All conversion cmdlets take `-Path` (wildcards, strings from the pipeline) or `-LiteralPath` (aliases `PSPath` and `LP`; files from `Get-ChildItem` and the objects of `Get-ImageInfo` bind here; folders are skipped), `-DestinationPath`, `-StripMetadata`, `-Force`, `-WhatIf` and `-Confirm`, and return a `FileInfo` for every written file — the same object `Get-Item` returns, so it can be piped into the next cmdlet even when its name contains `[` or `]`. The output gets the source's base name and the extension of the format, next to the source or in `-DestinationPath`. A file given more than once in a call (e.g. by the overlapping patterns `*.heic` and `IMG_*`) is converted or described once.
+
+Wildcards follow PowerShell's globbing, which skips hidden files (on Windows files with the Hidden attribute, on Linux and macOS names that start with a dot), as `Get-ChildItem` does without `-Force`; `-LiteralPath` and `Get-ChildItem -Force | ...` reach them.
+
+Like compiled cmdlets, the cmdlets follow the preference variables of their caller (`$WhatIfPreference`, `$ConfirmPreference`, `$ErrorActionPreference`, `$WarningPreference`, `$InformationPreference`, `$VerbosePreference`, `$DebugPreference`), also when a script or function sets them in its own scope: a function with `SupportsShouldProcess` that is called with `-WhatIf` passes it on, and `$ErrorActionPreference = 'Stop'` in a script makes the first error terminating. A common parameter given to the cmdlet itself wins.
 
 ## Formats
 
@@ -67,7 +74,7 @@ The source format is detected from the file content; every format Magick.NET can
 | PNG       | `Png`     | `.png`    | `ConvertTo-Png`    | no (lossless)                  | EXIF, XMP, IPTC, ICC colour profile, comments |
 | WebP      | `WebP`    | `.webp`   | `ConvertTo-WebP`   | yes                            | EXIF, XMP, ICC colour profile               |
 | AVIF      | `Avif`    | `.avif`   | `ConvertTo-Avif`   | yes                            | EXIF, XMP, ICC colour profile               |
-| JPEG XL   | `Jxl`     | `.jxl`    | `ConvertTo-JpegXL` | yes                            | EXIF, XMP, ICC colour profile               |
+| JPEG XL   | `Jxl`     | `.jxl`    | `ConvertTo-JpegXL` | yes                            | EXIF, XMP; ICC colour profile only at `-Quality 100` |
 | TIFF      | `Tiff`    | `.tif`    | —                  | no                             | XMP, IPTC, ICC colour profile, comments     |
 | BMP       | `Bmp`     | `.bmp`    | —                  | no                             | ICC colour profile                          |
 | GIF       | `Gif`     | `.gif`    | —                  | no                             | IPTC, ICC colour profile, comments          |
@@ -75,28 +82,36 @@ The source format is detected from the file content; every format Magick.NET can
 
 - The bundled Magick.NET build writes no EXIF data (date taken, camera, GPS location) to TIFF, BMP and GIF output; the cmdlets write a warning for every source with EXIF data unless `-StripMetadata` is used.
 - `-StripMetadata` removes EXIF (including the GPS location), XMP, IPTC and comments but keeps the ICC colour profile, so wide-gamut photos (e.g. Display P3) keep their colours.
+- Lossy JPEG XL (`-Quality` below 100, the default is 90) is always sRGB: the bundled encoder stores an ICC colour profile only in lossless files. The pixels of a source with an ICC profile (e.g. Display P3 or Adobe RGB) are converted to sRGB first, with and without `-StripMetadata`, so the photo looks the same; colours outside sRGB are clipped. Use `-Quality 100` or AVIF to keep a wide gamut. A profile that viewers ignore, because it is damaged or made for other pixels (a grey profile in a colour image), is ignored here as well.
+- JPEG has no transparency: transparent and half-transparent pixels (e.g. of a PNG logo) are placed on a white background (paper white for a CMYK image). The other formats keep the alpha channel (GIF only fully transparent or opaque pixels).
+- Only the first frame of an animated GIF or WebP, a multi-page TIFF or a HEIC file with several images is converted; the cmdlets write the warning `Only the first of <N> frames is converted: <path>` for every such source.
+- A source that ImageMagick can read but reports as damaged, e.g. a JPEG cut off by an interrupted copy (the missing part becomes grey) or an animated GIF cut off after its first frame (its frames cannot be counted then), is converted with the warning `The image may be damaged (<reasons>): <path>`; `Get-ImageInfo` writes the same warning. Other ImageMagick warnings about a source go to the verbose stream.
 - When the EXIF orientation is applied to the pixels, an EXIF thumbnail is removed (it would show rotated against the photo) and the XMP orientation and pixel dimensions are updated.
 - CMYK images (e.g. print JPEGs) stay CMYK with their colour profile in JPEG and TIFF output; for the other formats they are converted to sRGB through their CMYK profile.
 - **Writing HEIC is not supported yet**: the bundled Magick.NET build contains no HEVC encoder. AVIF uses the same container with the royalty-free AV1 codec and is the closest alternative.
 
 ## Errors
 
-Errors are non-terminating: the cmdlets continue with the next file, `$?` is `$false` afterwards, `-ErrorVariable` holds one record per failed file and `-ErrorAction Stop` stops at the first one. Every error has a stable id (`FullyQualifiedErrorId` `<Id>,<Cmdlet>`) and the source path as target object:
+Errors about a file are non-terminating: the cmdlets continue with the next file, `$?` is `$false` afterwards, `-ErrorVariable` holds one record per failed file and `-ErrorAction Stop` stops at the first one. A `-DestinationPath` that cannot name a folder (`InvalidDestinationPath`, `UnsupportedProvider`, `DestinationNotDirectory` below) is a parameter error instead: it stops the whole call with one terminating error before any file is read, also with `-WhatIf`, and `try`/`catch` catches it without `-ErrorAction Stop`. A destination folder that does not exist yet is created when the first file is written; when that fails (no permission, a read-only file system) or the folder cannot be written to, each file gets an `ImageWriteFailed` error. Every error has a stable id (`FullyQualifiedErrorId` `<Id>,<Cmdlet>`):
 
-| Id                                                  | Meaning                                                                                 |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `PathNotFound`                                      | The input matches no file                                                               |
-| `InvalidWildcardPattern`                            | A `-Path` is not a valid wildcard pattern (`a[.jpg`); use `-LiteralPath`                |
-| `UnsupportedProvider`                               | The input or `-DestinationPath` is not a file system path (Registry, Env:, ...)         |
-| `NotHeicFile`                                       | `ConvertFrom-Heic` only: the file has no `.heic`, `.heif` or `.hif` extension           |
-| `InvalidDestinationPath`                            | `-DestinationPath` has an unknown drive, leaves its drive root or has invalid characters |
-| `DestinationNotDirectory`                           | `-DestinationPath` or one of its parent folders is an existing file                     |
-| `TargetIsSource`                                    | The output would overwrite the source, e.g. `ConvertTo-Jpeg a.jpg` without `-DestinationPath`; also with `-Force` and when the folder is reached through a junction, symbolic link, other drive letter or UNC path |
-| `DuplicateTarget`                                   | Two sources of one call map to the same output file (`a.heic` and `a.png`); also with `-Force` |
-| `TargetExists`                                      | The output file exists and `-Force` is not set                                          |
-| `ImageReadFailed`, `ImageWriteFailed`               | Magick.NET cannot read the source or write the output                                   |
+| Id                                    | Kind        | Target object                     | Meaning                                                                                 |
+| ------------------------------------- | ----------- | --------------------------------- | --------------------------------------------------------------------------------------- |
+| `PathNotFound`                        | per file    | the input as given                | The input matches no file; for a wildcard pattern the message adds that wildcards do not match hidden files and `-LiteralPath` does, and for a pattern with `[` or `]` that these are wildcard characters |
+| `InvalidWildcardPattern`              | per file    | the input as given                | A `-Path` is not a valid wildcard pattern (`a[.jpg`); use `-LiteralPath`                |
+| `UnsupportedProvider`                 | per file    | the input as given                | The input is not a file system path (Registry, Env:, ...); one error per input, also for a pattern that matches several items there |
+| `UnsupportedProvider`                 | terminating | the `-DestinationPath` value      | `-DestinationPath` is not a file system path                                            |
+| `InvalidDestinationPath`              | terminating | the `-DestinationPath` value      | `-DestinationPath` is white space only, has an unknown drive or provider or invalid characters, or is a drive-qualified path that climbs above the root of its drive (`Temp:\..\x`; a relative path that climbs above the root stays at the root, as in other cmdlets) |
+| `DestinationNotDirectory`             | terminating | the `-DestinationPath` value      | `-DestinationPath` or one of its parent folders is an existing file, or a junction or symbolic link whose target does not exist |
+| `NotHeicFile`                         | per file    | the source file                   | `ConvertFrom-Heic` only: the file has no `.heic`, `.heif` or `.hif` extension           |
+| `TargetIsSource`                      | per file    | the source file                   | The output would overwrite the source, e.g. `ConvertTo-Jpeg a.jpg` without `-DestinationPath`; also with `-Force` and when the folder is reached through a junction, symbolic link, other drive letter or UNC path |
+| `DuplicateTarget`                     | per file    | the source file                   | Two sources of one call map to the same output file (`a.heic` and `a.png`); also with `-Force` |
+| `TargetExists`                        | per file    | the source file                   | The output file exists and `-Force` is not set                                          |
+| `ConfirmationFailed`                  | per file    | the source file                   | `-Confirm` (or the caller's `$ConfirmPreference`) asks for a confirmation the host cannot show, e.g. in `pwsh -NonInteractive`; use `-Confirm:$false` |
+| `ImageReadFailed`, `ImageWriteFailed` | per file    | the source file                   | Magick.NET cannot read the source or write the output, or the destination folder cannot be created or written to |
 
-`ConvertFrom-Heic` and the `ConvertTo-*` shortcuts pass all files of one call to a single `Convert-Image`, so the errors it finds are reported as `<Id>,Convert-Image`. Only the checks `ConvertFrom-Heic` makes itself on the input paths (`PathNotFound`, `InvalidWildcardPattern`, `UnsupportedProvider`, `NotHeicFile`) are reported as `<Id>,ConvertFrom-Heic`.
+`ConvertFrom-Heic` and the `ConvertTo-*` shortcuts pass all files of one call to a single `Convert-Image`, so the errors it finds are reported as `<Id>,Convert-Image`. The checks a shortcut makes before are reported with its own name: every shortcut checks `-DestinationPath` (e.g. `DestinationNotDirectory,ConvertTo-Jpeg`), and `ConvertFrom-Heic` also checks the input paths (`PathNotFound`, `InvalidWildcardPattern`, `UnsupportedProvider`, `NotHeicFile`).
+
+One call never overwrites a file it wrote itself, and without `-Force` it never overwrites an existing file. Separate calls or processes that write the same output file at the same time without `-Force` (e.g. `a.heic` and `a.heif` converted into one folder by `ForEach-Object -Parallel`) are not coordinated: on Windows the later one fails with `TargetExists` or `ImageWriteFailed`; on Linux and macOS both can succeed and the later file replaces the earlier one, because the final move checks for an existing file and then renames, which is not atomic there. With `-Force` the later file replaces the earlier one on every platform. Give parallel conversions different destination folders.
 
 ## Development
 

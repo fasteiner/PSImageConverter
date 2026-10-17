@@ -28,6 +28,29 @@ BeforeAll {
             }
         }
     }
+
+    # Returns the chunk types of a PNG file, text chunks with their keyword, e.g. 'zTXt:Raw profile type icc'.
+    function Get-PngChunkName
+    {
+        param ([System.String] $Path)
+
+        $data = [System.IO.File]::ReadAllBytes($Path)
+        $position = 8
+        while ($position + 12 -le $data.Length)
+        {
+            $length = ([System.Int64] $data[$position] -shl 24) -bor ([System.Int64] $data[$position + 1] -shl 16) -bor ([System.Int64] $data[$position + 2] -shl 8) -bor [System.Int64] $data[$position + 3]
+            $type = [System.Text.Encoding]::ASCII.GetString($data, $position + 4, 4)
+
+            if ($type -cin @('tEXt', 'zTXt', 'iTXt'))
+            {
+                $keywordEnd = [System.Array]::IndexOf($data, [System.Byte] 0, $position + 8)
+                $type = '{0}:{1}' -f $type, [System.Text.Encoding]::ASCII.GetString($data, $position + 8, $keywordEnd - $position - 8)
+            }
+
+            $type
+            $position += 12 + $length
+        }
+    }
 }
 
 AfterAll {
@@ -193,6 +216,290 @@ Describe 'Convert-ImageConverterImage' {
         {
             $image.Dispose()
         }
+    }
+
+    It 'Should write the ICC profile of a PNG only as iCCP chunk, StripMetadata <StripMetadata>' -ForEach @(
+        @{ StripMetadata = $false }
+        @{ StripMetadata = $true }
+    ) {
+        $source = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'rich.jpg') -Exif -ColorProfile -Xmp -Iptc -Comment 'secret comment'
+        $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.png'
+
+        $result = Invoke-Conversion -Parameters @{ SourcePath = $source.FullName; TargetPath = $target; Format = 'Png'; StripMetadata = $StripMetadata }
+
+        $result.Errors | Should -BeNullOrEmpty
+        $chunks = Get-PngChunkName -Path $target
+        @($chunks | Where-Object -FilterScript { $_ -eq 'iCCP' }) | Should -HaveCount 1
+        $chunks | Should -Not -Contain 'zTXt:Raw profile type icc'
+        $chunks | Should -Not -Contain 'tEXt:Raw profile type icc'
+        $chunks[-1] | Should -Be 'IEND'
+        if ($StripMetadata)
+        {
+            # Only the image structure and the colour profile are left.
+            $chunks | Where-Object -FilterScript { $_ -like '*:*' -or $_ -in @('eXIf', 'tIME') } | Should -BeNullOrEmpty
+        }
+        else
+        {
+            $chunks | Should -Contain 'eXIf'
+        }
+    }
+
+    It 'Should write the PNG through the encoder when the source has no ICC profile' {
+        $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.png'
+
+        $result = Invoke-Conversion -Parameters @{ SourcePath = $script:fixture; TargetPath = $target; Format = 'Png' }
+
+        $result.Errors | Should -BeNullOrEmpty
+        Get-PngChunkName -Path $target | Should -Not -Contain 'iCCP'
+    }
+
+    It 'Should write lossy Jxl with unchanged colours when the ICC profile of the source is damaged' {
+        # A JPEG whose ICC profile (APP2 segment) has a valid header but a destroyed tag table: ImageMagick reads it, lcms cannot use it.
+        $iccProfile = [ImageMagick.ColorProfiles]::AdobeRGB1998.ToByteArray()
+        for ($index = 132; $index -lt $iccProfile.Length; $index++)
+        {
+            $iccProfile[$index] = 0xAB
+        }
+
+        $payload = [System.Text.Encoding]::ASCII.GetBytes("ICC_PROFILE`0") + [System.Byte[]] @(1, 1) + $iccProfile
+        $segment = [System.Byte[]] @(0xFF, 0xE2, [System.Byte] (($payload.Length + 2) -shr 8), [System.Byte] (($payload.Length + 2) -band 0xFF)) + $payload
+        $jpeg = [System.IO.File]::ReadAllBytes((New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'plain.jpg')).FullName)
+        $source = Join-Path -Path $script:tempDir.FullName -ChildPath 'broken-profile.jpg'
+        [System.IO.File]::WriteAllBytes($source, [System.Byte[]] ($jpeg[0..1] + $segment + $jpeg[2..($jpeg.Length - 1)]))
+        $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.jxl'
+
+        $verbose = InModuleScope -ModuleName $script:moduleName -Parameters @{ SourcePath = $source; TargetPath = $target } {
+            & {
+                [CmdletBinding()]
+                param ()
+
+                Convert-ImageConverterImage -Cmdlet $PSCmdlet -SourcePath $SourcePath -TargetPath $TargetPath -Format 'Jxl' -Quality 90
+            } -ErrorVariable conversionErrors -WarningVariable conversionWarnings -Verbose 4>&1
+
+            $conversionErrors | Should -BeNullOrEmpty
+            $conversionWarnings | Should -BeNullOrEmpty
+        }
+
+        "$verbose" | Should -BeLike "*The ICC colour profile cannot be applied (*), so the colours are written unchanged: $source*"
+        $output = [ImageMagick.MagickImage]::new($target)
+        try
+        {
+            # Converted as Adobe RGB the red channel would drop from 64 to about 0.
+            [System.Math]::Abs([System.Int32] $output.GetPixels().GetPixel(0, 0).ToColor().R - 64) | Should -BeLessOrEqual 4
+        }
+        finally
+        {
+            $output.Dispose()
+        }
+    }
+
+    Context 'When the ICC profile is made for other pixels' {
+        BeforeAll {
+            # Converts lossy Jxl and returns the verbose messages and the first pixel of the output.
+            function Invoke-JxlConversion
+            {
+                param ([System.String] $SourcePath, [System.String] $TargetPath)
+
+                $verbose = InModuleScope -ModuleName $script:moduleName -Parameters @{ SourcePath = $SourcePath; TargetPath = $TargetPath } {
+                    & {
+                        [CmdletBinding()]
+                        param ()
+
+                        Convert-ImageConverterImage -Cmdlet $PSCmdlet -SourcePath $SourcePath -TargetPath $TargetPath -Format 'Jxl' -Quality 90
+                    } -Verbose 4>&1 | Where-Object -FilterScript { $_ -is [System.Management.Automation.VerboseRecord] }
+                }
+
+                $output = [ImageMagick.MagickImage]::new($TargetPath)
+                try
+                {
+                    $color = $output.GetPixels().GetPixel(0, 0).ToColor()
+                    [PSCustomObject] @{
+                        Verbose = "$verbose"
+                        Color   = @([System.Int32] $color.R, [System.Int32] $color.G, [System.Int32] $color.B)
+                    }
+                }
+                finally
+                {
+                    $output.Dispose()
+                }
+            }
+        }
+
+        It 'Should write lossy Jxl with the colours unchanged for a colour JPEG with a grey profile' {
+            # Viewers ignore a grey profile in a colour image; converted through it the colours would turn grey.
+            $source = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'colour.jpg') -Color '#4080C0'
+            $null = Add-TestJpegColorProfile -Path $source.FullName -ColorProfile (Get-TestGrayColorProfile).ToByteArray()
+
+            $result = Invoke-JxlConversion -SourcePath $source.FullName -TargetPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out.jxl')
+
+            $result.Verbose | Should -BeLike "*The ICC colour profile is made for grey pixels and does not match the image, so the colours are written unchanged: $($source.FullName)*"
+            $expected = @(64, 128, 192)
+            foreach ($channel in 0..2)
+            {
+                [System.Math]::Abs($result.Color[$channel] - $expected[$channel]) | Should -BeLessOrEqual 4 -Because "channel $channel is $($result.Color[$channel])"
+            }
+        }
+
+        It 'Should write lossy Jxl with the grey unchanged for a grey JPEG with a colour profile' {
+            # ImageMagick writes neutral grey pixels as a one-channel JPEG and keeps the Adobe RGB profile.
+            $source = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'grey.jpg') -Color '#808080' -ColorProfile
+
+            $result = Invoke-JxlConversion -SourcePath $source.FullName -TargetPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out.jxl')
+
+            $result.Verbose | Should -BeLike "*The ICC colour profile is made for colour pixels and does not match the image, so the colours are written unchanged: $($source.FullName)*"
+            [System.Math]::Abs($result.Color[0] - 128) | Should -BeLessOrEqual 2
+        }
+
+        It 'Should convert a grey image with a grey profile to sRGB for lossy Jxl' {
+            $image = [ImageMagick.MagickImage]::new([ImageMagick.MagickColor]::new('#808080'), 16, 16)
+            try
+            {
+                $image.ColorSpace = [ImageMagick.ColorSpace]::Gray
+                $image.SetProfile((Get-TestGrayColorProfile))
+                $source = Join-Path -Path $script:tempDir.FullName -ChildPath 'grey.png'
+                $image.Write($source, [ImageMagick.MagickFormat]::Png)
+            }
+            finally
+            {
+                $image.Dispose()
+            }
+
+            $result = Invoke-JxlConversion -SourcePath $source -TargetPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out.jxl')
+
+            $result.Verbose | Should -BeLike '*Converted the colours to sRGB*'
+            # Grey 128 with gamma 1.8 shows as about 146 in sRGB.
+            [System.Math]::Abs($result.Color[0] - 146) | Should -BeLessOrEqual 3
+        }
+    }
+
+    It 'Should write an RGB PNG that keeps the RGB profile of neutral grey pixels, alpha <Alpha>, StripMetadata <StripMetadata>' -ForEach @(
+        foreach ($alpha in @($false, $true))
+        {
+            foreach ($strip in @($false, $true))
+            {
+                @{ Alpha = $alpha; StripMetadata = $strip; ColorType = $(if ($alpha) { 6 } else { 2 }) }
+            }
+        }
+    ) {
+        # ImageMagick alone would write a greyscale PNG with the RGB profile, which readers drop.
+        $color = '#808080'
+        if ($Alpha)
+        {
+            $color = '#80808080'
+        }
+        $source = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'grey.png') -Format $(if ($Alpha) { 'Png32' } else { 'Png24' }) -Color $color -ColorProfile -Exif
+        $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.png'
+
+        $result = Invoke-Conversion -Parameters @{ SourcePath = $source.FullName; TargetPath = $target; Format = 'Png'; StripMetadata = $StripMetadata }
+
+        $result.Errors | Should -BeNullOrEmpty
+        [System.IO.File]::ReadAllBytes($target)[25] | Should -Be $ColorType -Because 'byte 25 is the colour type in the IHDR chunk'
+        $readWarnings = [System.Collections.Generic.List[System.String]]::new()
+        $output = [ImageMagick.MagickImage]::new()
+        try
+        {
+            $output.add_Warning([System.EventHandler[ImageMagick.WarningEventArgs]] { $readWarnings.Add($args[1].Message) }.GetNewClosure())
+            $output.Read($target)
+
+            $output.GetColorProfile().Description | Should -Be 'Adobe RGB (1998)'
+            $readWarnings | Should -BeNullOrEmpty
+            [System.Math]::Abs([System.Int32] $output.GetPixels().GetPixel(0, 0).ToColor().R - 128) | Should -BeLessOrEqual 1
+        }
+        finally
+        {
+            $output.Dispose()
+        }
+    }
+
+    It 'Should keep the colour type ImageMagick chooses for a coloured PNG with an RGB profile' {
+        $source = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'colour.png') -Format Png -ColorProfile
+        $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.png'
+        $direct = [ImageMagick.MagickImage]::new($source.FullName)
+        try
+        {
+            $expected = $direct.ToByteArray([ImageMagick.MagickFormat]::Png)[25]
+        }
+        finally
+        {
+            $direct.Dispose()
+        }
+
+        $null = Invoke-Conversion -Parameters @{ SourcePath = $source.FullName; TargetPath = $target; Format = 'Png' }
+
+        [System.IO.File]::ReadAllBytes($target)[25] | Should -Be $expected
+    }
+
+    It 'Should warn about a damaged source and convert it' {
+        $source = New-TestDamagedJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'cut.jpg')
+        $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.png'
+
+        $result = Invoke-Conversion -Parameters @{ SourcePath = $source.FullName; TargetPath = $target; Format = 'Png' }
+
+        $result.Errors | Should -BeNullOrEmpty
+        $result.Output.FullName | Should -Be $target
+        $result.Warnings | Should -HaveCount 1
+        "$($result.Warnings[0])" | Should -Be "The image may be damaged (Premature end of JPEG file; Corrupt JPEG data: premature end of data segment): $($source.FullName)"
+    }
+
+    It 'Should dispose the image and write no file when the damage warning stops the call' {
+        $outcome = InModuleScope -ModuleName $script:moduleName -Parameters @{ SourcePath = $script:fixture; TargetPath = $script:target } {
+            $script:readImage = [ImageMagick.MagickImage]::new($SourcePath)
+            Mock -CommandName Read-ImageConverterImage -MockWith {
+                [PSCustomObject] @{
+                    Result     = $script:readImage
+                    Exception  = $null
+                    Warnings   = @([ImageMagick.MagickCorruptImageWarningException]::new('Premature end of JPEG file'))
+                    FrameCount = 1
+                }
+            }
+
+            $caught = $null
+            try
+            {
+                & {
+                    [CmdletBinding()]
+                    param ()
+
+                    Convert-ImageConverterImage -Cmdlet $PSCmdlet -SourcePath $SourcePath -TargetPath $TargetPath -Format 'Jpeg'
+                } -WarningAction Stop -ErrorVariable conversionErrors
+            }
+            catch
+            {
+                $caught = $_
+            }
+
+            [PSCustomObject] @{
+                Caught = $caught
+                Errors = @($conversionErrors)
+                Image  = $script:readImage
+            }
+        }
+
+        $outcome.Caught.Exception | Should -BeOfType [System.Management.Automation.ActionPreferenceStopException]
+        $outcome.Errors | Where-Object -FilterScript { $_.FullyQualifiedErrorId -like 'ImageWriteFailed*' } | Should -BeNullOrEmpty
+        { $null = $outcome.Image.ToByteArray([ImageMagick.MagickFormat]::Png) } | Should -Throw -ExpectedMessage '*disposed object*'
+        $script:target | Should -Not -Exist
+    }
+
+    It 'Should warn that only the first frame of a source with several frames is converted' {
+        $source = New-TestFrameImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'anim.gif') -Format Gif -FrameCount 3
+        $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.png'
+
+        $result = Invoke-Conversion -Parameters @{ SourcePath = $source.FullName; TargetPath = $target; Format = 'Png' }
+
+        $result.Errors | Should -BeNullOrEmpty
+        $result.Warnings | Should -HaveCount 1
+        "$($result.Warnings[0])" | Should -Be "Only the first of 3 frames is converted: $($source.FullName)"
+    }
+
+    It 'Should not warn about the frames when the conversion fails' {
+        $source = New-TestFrameImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'anim.gif') -Format Gif -FrameCount 3
+        $null = New-Item -ItemType Directory -Path $script:target
+
+        $result = Invoke-Conversion -Parameters @{ SourcePath = $source.FullName; TargetPath = $script:target; Format = 'Jpeg'; Force = $true }
+
+        $result.Errors | Should -HaveCount 1
+        $result.Warnings | Should -BeNullOrEmpty
     }
 
     It 'Should warn when the EXIF data cannot be written to the format' {

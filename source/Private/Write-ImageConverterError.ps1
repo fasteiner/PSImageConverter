@@ -2,7 +2,7 @@ function Write-ImageConverterError
 {
     <#
         .SYNOPSIS
-        Writes a non-terminating error with a stable error id through the calling cmdlet.
+        Writes an error with a stable error id through the calling cmdlet.
 
         .DESCRIPTION
         Creates an ErrorRecord with the given exception, error id, category and target object
@@ -11,7 +11,10 @@ function Write-ImageConverterError
         -ErrorAction of that cmdlet applies (Stop makes the error terminating). Wrapper
         exceptions (MethodInvocationException, TargetInvocationException) are replaced by the
         exception they contain. With -MessagePrefix the message shown is
-        '<MessagePrefix>: <exception message>'; the exception itself stays unchanged.
+        '<MessagePrefix>: <exception message>'; the exception itself stays unchanged. With
+        -Terminating the record is thrown with ThrowTerminatingError of that cmdlet instead: the
+        whole call stops (the caller's statement fails, try/catch catches it without
+        -ErrorAction Stop), for a parameter value that would make every item fail.
 
         .PARAMETER Cmdlet
         The $PSCmdlet of the public cmdlet that reports the error, e.g. Convert-Image.
@@ -30,6 +33,9 @@ function Write-ImageConverterError
 
         .PARAMETER MessagePrefix
         Optional text put in front of the exception message, e.g. "Cannot read image 'C:\a.heic'".
+
+        .PARAMETER Terminating
+        Throws the error as terminating error of the cmdlet instead of writing it.
 
         .EXAMPLE
         Write-ImageConverterError -Cmdlet $PSCmdlet -Exception $exception -ErrorId 'ImageReadFailed' -Category 'InvalidData' -TargetObject $sourcePath -MessagePrefix "Cannot read image '$sourcePath'"
@@ -63,7 +69,11 @@ function Write-ImageConverterError
 
         [Parameter()]
         [System.String]
-        $MessagePrefix
+        $MessagePrefix,
+
+        [Parameter()]
+        [System.Management.Automation.SwitchParameter]
+        $Terminating
     )
 
     while (($Exception -is [System.Management.Automation.MethodInvocationException] -or $Exception -is [System.Reflection.TargetInvocationException]) -and $null -ne $Exception.InnerException)
@@ -76,6 +86,11 @@ function Write-ImageConverterError
     if (-not [System.String]::IsNullOrEmpty($MessagePrefix))
     {
         $errorRecord.ErrorDetails = [System.Management.Automation.ErrorDetails]::new("$($MessagePrefix): $($Exception.Message)")
+    }
+
+    if ($Terminating)
+    {
+        $Cmdlet.ThrowTerminatingError($errorRecord)
     }
 
     $Cmdlet.WriteError($errorRecord)

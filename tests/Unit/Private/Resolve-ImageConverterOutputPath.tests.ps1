@@ -68,7 +68,7 @@ Describe 'Resolve-ImageConverterOutputPath' {
     It 'Should use the destination folder without creating it' {
         $destination = Join-Path -Path $script:tempDir.FullName -ChildPath 'out'
 
-        $result = Invoke-Resolve -Parameters @{ SourcePath = $script:source; Extension = '.png'; DestinationPath = $destination }
+        $result = Invoke-Resolve -Parameters @{ SourcePath = $script:source; Extension = '.png'; Folder = $destination }
 
         $result.Output | Should -Be (Join-Path -Path $destination -ChildPath 'IMG_0001.png')
         $destination | Should -Not -Exist
@@ -120,46 +120,6 @@ Describe 'Resolve-ImageConverterOutputPath' {
         "$($result.Errors[0])" | Should -BeLike "*$firstSource*"
     }
 
-    It 'Should write DestinationNotDirectory when the destination is a file' {
-        $file = Join-Path -Path $script:tempDir.FullName -ChildPath 'file.txt'
-        Set-Content -Path $file -Value 'x'
-
-        $result = Invoke-Resolve -Parameters @{ SourcePath = $script:source; Extension = '.jpg'; DestinationPath = $file }
-
-        $result.Errors[0].FullyQualifiedErrorId | Should -BeLike 'DestinationNotDirectory*'
-        $result.Errors[0].TargetObject | Should -Be $script:source
-    }
-
-    It 'Should write UnsupportedProvider for a destination of another provider' {
-        $result = Invoke-Resolve -Parameters @{ SourcePath = $script:source; Extension = '.jpg'; DestinationPath = 'Env:\Pictures' }
-
-        $result.Errors[0].FullyQualifiedErrorId | Should -BeLike 'UnsupportedProvider*'
-        "$($result.Errors[0])" | Should -BeLike '*Environment provider*'
-    }
-
-    It 'Should write InvalidDestinationPath for a destination of an unknown provider' {
-        $result = Invoke-Resolve -Parameters @{ SourcePath = $script:source; Extension = '.jpg'; DestinationPath = 'NoSuchProvider::C:\out' }
-
-        $result.Errors | Should -HaveCount 1
-        $result.Errors[0].FullyQualifiedErrorId | Should -BeLike 'InvalidDestinationPath*'
-    }
-
-    It 'Should write exactly one InvalidDestinationPath error for a destination that leaves its drive root' {
-        $null = New-PSDrive -Name 'PsicRoot' -PSProvider FileSystem -Root $script:tempDir.FullName -Scope Global
-        try
-        {
-            $result = Invoke-Resolve -Parameters @{ SourcePath = $script:source; Extension = '.jpg'; DestinationPath = 'PsicRoot:/../../x' }
-        }
-        finally
-        {
-            Remove-PSDrive -Name 'PsicRoot' -Scope Global
-        }
-
-        $result.Errors | Should -HaveCount 1
-        $result.Errors[0].FullyQualifiedErrorId | Should -BeLike 'InvalidDestinationPath*'
-        $result.Errors[0].Exception.InnerException | Should -Not -BeNullOrEmpty
-    }
-
     Context 'When the target exists under another spelling' {
         BeforeEach {
             $script:realFolder = New-Item -ItemType Directory -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'real')
@@ -179,7 +139,7 @@ Describe 'Resolve-ImageConverterOutputPath' {
         }
 
         It 'Should write TargetIsSource when the destination reaches the source through a link, also with Force' {
-            $result = Invoke-Resolve -Parameters @{ SourcePath = $script:realSource; Extension = '.jpg'; DestinationPath = $script:linkFolder; Force = $true }
+            $result = Invoke-Resolve -Parameters @{ SourcePath = $script:realSource; Extension = '.jpg'; Folder = $script:linkFolder; Force = $true }
 
             $result.Output | Should -BeNullOrEmpty
             $result.Errors | Should -HaveCount 1
@@ -190,7 +150,7 @@ Describe 'Resolve-ImageConverterOutputPath' {
             $written = Join-Path -Path $script:realFolder.FullName -ChildPath 'IMG_0001.jpg'
             Set-Content -Path $written -Value 'x'
 
-            $result = Invoke-Resolve -Parameters @{ SourcePath = $script:source; Extension = '.jpg'; DestinationPath = $script:linkFolder; Force = $true } -Written @{ $written = 'first.heic' }
+            $result = Invoke-Resolve -Parameters @{ SourcePath = $script:source; Extension = '.jpg'; Folder = $script:linkFolder; Force = $true } -Written @{ $written = 'first.heic' }
 
             $result.Output | Should -BeNullOrEmpty
             $result.Errors | Should -HaveCount 1
@@ -202,7 +162,7 @@ Describe 'Resolve-ImageConverterOutputPath' {
             $other = Join-Path -Path $script:realFolder.FullName -ChildPath 'IMG_0001.jpg'
             Set-Content -Path $other -Value 'x'
 
-            $result = Invoke-Resolve -Parameters @{ SourcePath = $script:source; Extension = '.jpg'; DestinationPath = $script:linkFolder; Force = $true } -Written @{ $script:realSource = 'first.heic' }
+            $result = Invoke-Resolve -Parameters @{ SourcePath = $script:source; Extension = '.jpg'; Folder = $script:linkFolder; Force = $true } -Written @{ $script:realSource = 'first.heic' }
 
             $result.Errors | Should -BeNullOrEmpty
             $result.Output | Should -Be (Join-Path -Path $script:linkFolder -ChildPath 'IMG_0001.jpg')

@@ -207,4 +207,66 @@ Describe 'ConvertTo-JpegXL' {
             (Get-ImageInfo -LiteralPath $result.FullName).Format | Should -Be 'Jxl'
         }
     }
+
+    Context 'When the source has a wide-gamut ICC profile' {
+        BeforeAll {
+            # The colour a colour-managed viewer shows: the pixel converted from the embedded profile to sRGB.
+            function Get-ViewerColor
+            {
+                param ([System.String] $Path)
+
+                $image = [ImageMagick.MagickImage]::new($Path)
+                try
+                {
+                    $null = $image.TransformColorSpace([ImageMagick.ColorProfiles]::SRGB)
+                    $color = $image.GetPixels().GetPixel(0, 0).ToColor()
+                    @([System.Int32] $color.R, [System.Int32] $color.G, [System.Int32] $color.B)
+                }
+                finally
+                {
+                    $image.Dispose()
+                }
+            }
+        }
+
+        It 'Should keep the colours at quality <Quality>' -ForEach @(
+            @{ Quality = 90 }
+            @{ Quality = 100 }
+        ) {
+            $wide = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'wide.png') -Format Png -ColorProfile
+            $expected = Get-ViewerColor -Path $wide.FullName
+
+            $result = ConvertTo-JpegXL -LiteralPath $wide.FullName -Quality $Quality
+
+            $actual = Get-ViewerColor -Path $result.FullName
+            foreach ($channel in 0..2)
+            {
+                [System.Math]::Abs($actual[$channel] - $expected[$channel]) | Should -BeLessOrEqual 6 -Because "channel $channel shows $($actual[$channel]), the source shows $($expected[$channel])"
+            }
+        }
+    }
+
+    Context 'When the session has an alias named Convert-Image' {
+        It 'Should still call the module''s Convert-Image' {
+            # An alias wins over every function of the same name, in every scope.
+            function global:Invoke-PsicHijack
+            {
+                param ([Parameter(ValueFromRemainingArguments = $true)] $Arguments)
+
+                'hijacked'
+            }
+            Set-Alias -Name 'Convert-Image' -Value 'Invoke-PsicHijack' -Scope Global
+            try
+            {
+                $result = ConvertTo-JpegXL -LiteralPath $script:source
+            }
+            finally
+            {
+                Remove-Item -LiteralPath 'Alias:\Convert-Image', 'Function:\Invoke-PsicHijack' -Force
+            }
+
+            $result | Should -BeOfType [System.IO.FileInfo]
+            $result.Name | Should -Be 'IMG_0001.jxl'
+        }
+    }
 }

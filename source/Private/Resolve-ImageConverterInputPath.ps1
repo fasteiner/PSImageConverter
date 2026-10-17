@@ -10,9 +10,14 @@ function Resolve-ImageConverterInputPath
         names are expanded, so one file always has one spelling). Folders are skipped
         (Write-Verbose), so the output of Get-ChildItem -Recurse can be piped in. An item that
         matches nothing gets a PathNotFound error, a -Path item that is not a valid wildcard
-        pattern (e.g. 'a[.jpg') an InvalidWildcardPattern error and a path of another provider
-        (Registry, Env:, ...) an UnsupportedProvider error; each is written once through the
-        cmdlet passed in -Cmdlet and processing continues with the next item.
+        pattern (e.g. 'a[.jpg', whether or not a file of that name exists) an
+        InvalidWildcardPattern error and a path of another provider (Registry, Env:, ...) an
+        UnsupportedProvider error, one for the item also when its pattern matches several
+        items there; each is written once through the cmdlet passed in -Cmdlet with the item
+        as given as target object, and processing continues with the next item. For a wildcard
+        pattern that matches nothing the message says so and adds that wildcards skip hidden
+        files (on Linux and macOS: names starting with a dot), which -LiteralPath reaches, and,
+        for a pattern with [ or ], that these are wildcard characters.
 
         .PARAMETER Path
         Paths to resolve with wildcard expansion, e.g. 'C:\Pictures\*.heic'.
@@ -64,30 +69,65 @@ function Resolve-ImageConverterInputPath
             file, which -ErrorAction Ignore does not suppress; the compiled call returns it instead.
         #>
         $resolve = Invoke-ImageConverterMethod -InputObject $Cmdlet.SessionState.Path -Name 'GetResolvedPSPathFromPSPath' -ArgumentList $pattern
+        $found = $null -eq $resolve.Exception -and $resolve.Result.Count -gt 0
+        $isPattern = $PSCmdlet.ParameterSetName -eq 'Path' -and [System.Management.Automation.WildcardPattern]::ContainsWildcardCharacters($item)
 
+        $patternException = $null
         if ($resolve.Exception -is [System.Management.Automation.WildcardPatternException])
         {
-            $exception = [System.ArgumentException]::new("The path '$item' is not a valid wildcard pattern. Use -LiteralPath for a file name that contains [ or ].", $resolve.Exception)
+            $patternException = $resolve.Exception
+        }
+        elseif (-not $found -and $isPattern)
+        {
+            # The resolver checks the pattern only against an existing file of that literal name; otherwise it finds nothing.
+            $patternException = (Invoke-ImageConverterMethod -InputObject ([System.Management.Automation.WildcardPattern]::new($item)) -Name 'IsMatch' -ArgumentList '').Exception
+        }
+
+        if ($patternException -is [System.Management.Automation.WildcardPatternException])
+        {
+            $exception = [System.ArgumentException]::new("The path '$item' is not a valid wildcard pattern. Use -LiteralPath for a file name that contains [ or ].", $patternException)
             Write-ImageConverterError -Cmdlet $Cmdlet -Exception $exception -ErrorId 'InvalidWildcardPattern' -Category 'InvalidArgument' -TargetObject $item
             continue
         }
 
-        if ($null -ne $resolve.Exception -or $resolve.Result.Count -eq 0)
+        if (-not $found)
         {
-            $exception = [System.Management.Automation.ItemNotFoundException]::new("Cannot find path '$item' because it does not exist.", $resolve.Exception)
+            $message = "Cannot find path '$item' because it does not exist."
+
+            if ($isPattern)
+            {
+                # PowerShell's globbing leaves out hidden files, as Get-ChildItem does without -Force.
+                $hiddenFiles = 'hidden (dot) files'
+                if ($IsWindows)
+                {
+                    $hiddenFiles = 'hidden files'
+                }
+
+                $message = "No file matches the pattern '$item'. Wildcards do not match $hiddenFiles; -LiteralPath does."
+
+                # A name such as 'photo[1].heic' is a pattern that matches 'photo1.heic' only.
+                if ($item -match '(?<!`)[\[\]]')
+                {
+                    $message = "No file matches the pattern '$item'. [ and ] are wildcard characters, and wildcards do not match $hiddenFiles; -LiteralPath takes the name as written."
+                }
+            }
+
+            $exception = [System.Management.Automation.ItemNotFoundException]::new($message, $resolve.Exception)
             Write-ImageConverterError -Cmdlet $Cmdlet -Exception $exception -ErrorId 'PathNotFound' -Category 'ObjectNotFound' -TargetObject $item
+            continue
+        }
+
+        # A pattern resolves within one provider, so a pattern of another provider gets one error, not one per match.
+        $provider = $resolve.Result[0].Provider
+        if ($provider.ImplementingType -ne [Microsoft.PowerShell.Commands.FileSystemProvider])
+        {
+            $exception = [System.ArgumentException]::new("The path '$item' belongs to the $($provider.Name) provider. Only file system paths are supported.")
+            Write-ImageConverterError -Cmdlet $Cmdlet -Exception $exception -ErrorId 'UnsupportedProvider' -Category 'InvalidArgument' -TargetObject $item
             continue
         }
 
         foreach ($resolvedPath in $resolve.Result)
         {
-            if ($resolvedPath.Provider.ImplementingType -ne [Microsoft.PowerShell.Commands.FileSystemProvider])
-            {
-                $exception = [System.ArgumentException]::new("The path '$($resolvedPath.Path)' belongs to the $($resolvedPath.Provider.Name) provider. Only file system paths are supported.")
-                Write-ImageConverterError -Cmdlet $Cmdlet -Exception $exception -ErrorId 'UnsupportedProvider' -Category 'InvalidArgument' -TargetObject $item
-                continue
-            }
-
             $fullPath = [System.IO.Path]::GetFullPath($resolvedPath.ProviderPath)
 
             if ([System.IO.Directory]::Exists($fullPath))

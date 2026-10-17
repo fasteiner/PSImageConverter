@@ -8,10 +8,10 @@ function Resolve-ImageConverterOutputPath
         Combines the destination folder (or the source file's folder when none is given)
         with the source file's base name and the new extension, and returns the full path.
         Returns nothing and writes an error through the cmdlet passed in -Cmdlet when the
-        destination is not usable (InvalidDestinationPath, UnsupportedProvider,
-        DestinationNotDirectory), the target is the source file itself (TargetIsSource), an
-        earlier source of the same call already maps to it or wrote it (DuplicateTarget) or it
-        already exists (TargetExists). -Force only lifts TargetExists for an existing file.
+        target is the source file itself (TargetIsSource), an earlier source of the same call
+        already maps to it or wrote it (DuplicateTarget) or it already exists (TargetExists).
+        -Force only lifts TargetExists for an existing file. The destination folder has been
+        checked once for the whole call before (Assert-ImageConverterDestinationPath).
         An existing target is compared with the source and with the files written earlier in
         the call by file identity, so another spelling of the same file (a junction, a symbolic
         link to a folder, a subst drive, a UNC path, another letter case on a case-insensitive
@@ -27,8 +27,8 @@ function Resolve-ImageConverterOutputPath
         .PARAMETER Extension
         The extension of the output file including the leading dot, e.g. '.jpg'.
 
-        .PARAMETER DestinationPath
-        Optional folder for the output file. Defaults to the source file's folder.
+        .PARAMETER Folder
+        The full path of the destination folder. Defaults to the source file's folder.
 
         .PARAMETER ClaimedTarget
         The targets earlier sources of the same call map to (target path to source path).
@@ -62,7 +62,7 @@ function Resolve-ImageConverterOutputPath
 
         [Parameter()]
         [System.String]
-        $DestinationPath,
+        $Folder,
 
         [Parameter(Mandatory = $true)]
         [AllowEmptyCollection()]
@@ -79,22 +79,7 @@ function Resolve-ImageConverterOutputPath
         $Force
     )
 
-    $folder = $null
-
-    if (-not [System.String]::IsNullOrEmpty($DestinationPath))
-    {
-        $destination = Resolve-ImageConverterDestinationPath -DestinationPath $DestinationPath
-
-        if ($null -ne $destination.ErrorId)
-        {
-            Write-ImageConverterError -Cmdlet $Cmdlet -Exception $destination.Exception -ErrorId $destination.ErrorId -Category 'InvalidArgument' -TargetObject $SourcePath
-            return
-        }
-
-        $folder = $destination.Path
-    }
-
-    $targetPath = Get-ImageConverterTargetPath -SourcePath $SourcePath -Extension $Extension -Folder $folder
+    $targetPath = Get-ImageConverterTargetPath -SourcePath $SourcePath -Extension $Extension -Folder $Folder
     $sourceFullPath = [System.IO.Path]::GetFullPath($SourcePath)
     $isSource = [System.String]::Equals($targetPath, $sourceFullPath, [System.StringComparison]::Ordinal)
     $writtenBy = $null

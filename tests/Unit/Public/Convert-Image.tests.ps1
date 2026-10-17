@@ -92,6 +92,7 @@ Describe 'Convert-Image' {
             $conversionError[0].FullyQualifiedErrorId | Should -Be 'PathNotFound,Convert-Image'
             $conversionError[0].CategoryInfo.Category | Should -Be 'ObjectNotFound'
             $conversionError[0].TargetObject | Should -Be $pattern
+            "$($conversionError[0])" | Should -BeLike 'No file matches the pattern *'
         }
     }
 
@@ -124,10 +125,13 @@ Describe 'Convert-Image' {
             $result.Name | Should -Be 'IMG[1].png'
         }
 
-        It 'Should treat the brackets in -Path as a wildcard pattern' {
+        It 'Should treat the brackets in -Path as a wildcard pattern and say so' {
             $null = Convert-Image -Path $script:bracketSource -Format Png -ErrorAction SilentlyContinue -ErrorVariable conversionError
 
+            $conversionError | Should -HaveCount 1
             $conversionError[0].FullyQualifiedErrorId | Should -Be 'PathNotFound,Convert-Image'
+            $expected = [System.Management.Automation.WildcardPattern]::Escape("No file matches the pattern '$($script:bracketSource)'. [ and ] are wildcard characters, ") + '*' + [System.Management.Automation.WildcardPattern]::Escape('; -LiteralPath takes the name as written.')
+            "$($conversionError[0])" | Should -BeLike $expected
         }
     }
 
@@ -150,27 +154,31 @@ Describe 'Convert-Image' {
     }
 
     Context 'When a path is not a file system path' {
-        It 'Should write an UnsupportedProvider error for the input' {
+        It 'Should write an UnsupportedProvider error for the input, with the input as target' {
             $null = Convert-Image -LiteralPath 'Env:\PATH' -Format Png -ErrorAction SilentlyContinue -ErrorVariable conversionError
 
             $conversionError | Should -HaveCount 1
             $conversionError[0].FullyQualifiedErrorId | Should -Be 'UnsupportedProvider,Convert-Image'
             $conversionError[0].CategoryInfo.Category | Should -Be 'InvalidArgument'
+            $conversionError[0].TargetObject | Should -Be 'Env:\PATH'
         }
 
-        It 'Should write an UnsupportedProvider error for the destination' {
-            $null = Convert-Image -Path $script:source -Format Png -DestinationPath 'Env:\Pictures' -ErrorAction SilentlyContinue -ErrorVariable conversionError
+        It 'Should write one UnsupportedProvider error for a pattern that matches several items of another provider' {
+            $env:PSIC_CONVERT_A = 'a'
+            $env:PSIC_CONVERT_B = 'b'
+            try
+            {
+                $result = Convert-Image -Path 'Env:\PSIC_CONVERT_*', $script:source -Format Png -ErrorAction SilentlyContinue -ErrorVariable conversionError
+            }
+            finally
+            {
+                Remove-Item -Path 'Env:\PSIC_CONVERT_A', 'Env:\PSIC_CONVERT_B'
+            }
 
             $conversionError | Should -HaveCount 1
             $conversionError[0].FullyQualifiedErrorId | Should -Be 'UnsupportedProvider,Convert-Image'
-            $conversionError[0].TargetObject | Should -Be $script:source
-        }
-
-        It 'Should write an InvalidDestinationPath error for an unknown provider' {
-            $null = Convert-Image -Path $script:source -Format Png -DestinationPath 'NoSuchProvider::C:\out' -ErrorAction SilentlyContinue -ErrorVariable conversionError
-
-            $conversionError | Should -HaveCount 1
-            $conversionError[0].FullyQualifiedErrorId | Should -Be 'InvalidDestinationPath,Convert-Image'
+            $conversionError[0].TargetObject | Should -Be 'Env:\PSIC_CONVERT_*'
+            $result.Name | Should -Be 'IMG_0001.png'
         }
     }
 
@@ -439,11 +447,33 @@ Describe 'Convert-Image' {
         }
 
         It 'Should overwrite a hidden file with -Force' -Skip:(-not $IsWindows) {
+            [System.IO.File]::SetAttributes($script:target, [System.IO.FileAttributes]::Hidden)
+
+            $result = Convert-Image -Path $script:source -Format Jpeg -Force -ErrorVariable conversionError
+
+            $conversionError | Should -BeNullOrEmpty
+            $result.FullName | Should -Be $script:target
+            (Get-ImageInfo -LiteralPath $result.FullName).Format | Should -Be 'Jpeg'
+        }
+
+        It 'Should overwrite a read-only, hidden file with -Force' -Skip:(-not $IsWindows) {
             [System.IO.File]::SetAttributes($script:target, [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::ReadOnly)
 
             $result = Convert-Image -Path $script:source -Format Jpeg -Force
 
             (Get-ImageInfo -LiteralPath $result.FullName).Format | Should -Be 'Jpeg'
+        }
+
+        It 'Should overwrite a hidden dot file with -Force' -Skip:$IsWindows {
+            $dotSource = Join-Path -Path $script:tempDir.FullName -ChildPath '.IMG_0002.HEIC'
+            Copy-Item -LiteralPath $script:fixture -Destination $dotSource
+            $dotTarget = Join-Path -Path $script:tempDir.FullName -ChildPath '.IMG_0002.jpg'
+            Set-Content -Path $dotTarget -Value 'existing'
+
+            $result = Convert-Image -LiteralPath $dotSource -Format Jpeg -Force
+
+            $result.FullName | Should -Be $dotTarget
+            (Get-ImageInfo -LiteralPath $dotTarget).Format | Should -Be 'Jpeg'
         }
 
         It 'Should keep the attributes of a read-only, hidden file it cannot replace with -Force' -Skip:(-not $IsWindows) {
@@ -490,18 +520,6 @@ Describe 'Convert-Image' {
 
             $result.FullName | Should -Be (Join-Path -Path $script:tempDir.FullName -ChildPath 'relative/IMG_0001.png' | Convert-Path)
         }
-
-        It 'Should write a DestinationNotDirectory error when the destination is a file' {
-            $file = Join-Path -Path $script:tempDir.FullName -ChildPath 'file.txt'
-            Set-Content -Path $file -Value 'x'
-
-            $null = Convert-Image -Path $script:source -Format Png -DestinationPath $file -ErrorAction SilentlyContinue -ErrorVariable conversionError
-
-            $conversionError | Should -HaveCount 1
-            $conversionError[0].FullyQualifiedErrorId | Should -Be 'DestinationNotDirectory,Convert-Image'
-            $conversionError[0].CategoryInfo.Category | Should -Be 'InvalidArgument'
-            Get-Content -Path $file | Should -Be 'x'
-        }
     }
 
     Context 'When using -WhatIf' {
@@ -512,6 +530,206 @@ Describe 'Convert-Image' {
 
             $result | Should -BeNullOrEmpty
             $destination | Should -Not -Exist
+        }
+    }
+
+    Context 'When the caller sets preference variables in its own scope' {
+        BeforeAll {
+            # A user's function: -WhatIf sets $WhatIfPreference in its own scope, which a module function does not see by itself.
+            function Invoke-UserFunction
+            {
+                [CmdletBinding(SupportsShouldProcess = $true)]
+                param ([System.Collections.Hashtable] $Parameters)
+
+                Convert-Image @Parameters
+            }
+        }
+
+        BeforeEach {
+            $script:missing = Join-Path -Path $script:tempDir.FullName -ChildPath 'missing.heic'
+            $script:target = Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0001.png'
+        }
+
+        It 'Should write nothing when a user function is called with -WhatIf' {
+            $destination = Join-Path -Path $script:tempDir.FullName -ChildPath 'whatif'
+
+            $result = Invoke-UserFunction -Parameters @{ Path = $script:source; Format = 'Png'; DestinationPath = $destination } -WhatIf
+
+            $result | Should -BeNullOrEmpty
+            $destination | Should -Not -Exist
+        }
+
+        It 'Should not overwrite an existing file with -Force when a user function is called with -WhatIf' {
+            Set-Content -Path $script:target -Value 'existing'
+
+            $result = Invoke-UserFunction -Parameters @{ Path = $script:source; Format = 'Png'; Force = $true } -WhatIf
+
+            $result | Should -BeNullOrEmpty
+            Get-Content -Path $script:target | Should -Be 'existing'
+        }
+
+        It 'Should let -WhatIf:$false given to Convert-Image win over the caller''s -WhatIf' {
+            $result = Invoke-UserFunction -Parameters @{ Path = $script:source; Format = 'Png'; WhatIf = $false } -WhatIf
+
+            $result.FullName | Should -Be $script:target
+        }
+
+        It 'Should make the first failure terminating with $ErrorActionPreference = ''Stop'' in the calling script' {
+            {
+                $ErrorActionPreference = 'Stop'
+                Convert-Image -Path $script:missing, $script:source -Format Png
+            } | Should -Throw -ErrorId 'PathNotFound,Convert-Image'
+
+            $script:target | Should -Not -Exist
+        }
+
+        It 'Should let an explicit -ErrorAction Continue win over the caller''s $ErrorActionPreference' {
+            $outcome = & {
+                $ErrorActionPreference = 'Stop'
+                $written = Convert-Image -Path $script:missing, $script:source -Format Png -ErrorAction Continue -ErrorVariable conversionError 2>$null
+
+                [PSCustomObject] @{
+                    Written = $written
+                    Errors  = @($conversionError)
+                }
+            }
+
+            $outcome.Errors.FullyQualifiedErrorId | Should -Be 'PathNotFound,Convert-Image'
+            $outcome.Written.FullName | Should -Be $script:target
+        }
+
+        Context 'When a confirmation cannot be asked' {
+            BeforeAll {
+                # Runs a script in a runspace without a user interface, where a confirmation prompt fails.
+                function Invoke-WithoutUserInterface
+                {
+                    param ([System.String] $Script)
+
+                    $powerShell = [System.Management.Automation.PowerShell]::Create()
+                    try
+                    {
+                        $output = $powerShell.AddScript("Import-Module -Name '$($script:manifestPath)'; $Script").Invoke()
+
+                        [PSCustomObject] @{
+                            Output = @($output)
+                            Errors = @($powerShell.Streams.Error)
+                        }
+                    }
+                    finally
+                    {
+                        $powerShell.Dispose()
+                    }
+                }
+
+                <#
+                    Pester does not fall back to the real command when no -ParameterFilter matches, so this
+                    default mock does what Invoke-ImageConverterMethod does, through its compiled helper.
+                #>
+                function Use-RealMethodInvoker
+                {
+                    InModuleScope -ModuleName $script:moduleName {
+                        $null = Invoke-ImageConverterMethod -Type ([System.Object])
+                    }
+
+                    Mock -ModuleName $script:moduleName -CommandName Invoke-ImageConverterMethod -MockWith {
+                        $target = $null
+                        $methodType = $Type
+                        if ($null -ne $InputObject)
+                        {
+                            $target = $InputObject
+                            $methodType = $InputObject.GetType()
+                        }
+
+                        $result = $null
+                        $values = $null
+                        $exception = [PSImageConverter.SafeInvoker]::Invoke($methodType, $target, $Name, $ArgumentList, [ref] $result, [ref] $values)
+                        [PSCustomObject] @{ Result = $result; Exception = $exception; Arguments = $values }
+                    }
+                }
+            }
+
+            BeforeEach {
+                $script:secondSource = Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0002.HEIC'
+                Copy-Item -LiteralPath $script:fixture -Destination $script:secondSource
+                $script:conversion = "Convert-Image -LiteralPath '$($script:source)', '$($script:secondSource)' -Format Png"
+            }
+
+            It 'Should write one ConfirmationFailed error per file and convert nothing for <Case>' -ForEach @(
+                @{ Case = '-Confirm'; Script = '<conversion> -Confirm' }
+                @{ Case = 'a user function called with -Confirm'; Script = 'function Invoke-UserFunction { [CmdletBinding(SupportsShouldProcess = $true)] param () <conversion> }; Invoke-UserFunction -Confirm' }
+                @{ Case = '$ConfirmPreference = ''Low'' in the calling script'; Script = '& { $ConfirmPreference = ''Low''; <conversion> }' }
+            ) {
+                $result = Invoke-WithoutUserInterface -Script $Script.Replace('<conversion>', $script:conversion)
+
+                $result.Output | Should -BeNullOrEmpty
+                $result.Errors | Should -HaveCount 2
+                $result.Errors.FullyQualifiedErrorId | Sort-Object -Unique | Should -Be 'ConfirmationFailed,Convert-Image'
+                $result.Errors.TargetObject | Should -Be @($script:source, $script:secondSource)
+                $result.Errors[0].CategoryInfo.Category | Should -Be 'InvalidOperation'
+                "$($result.Errors[0])" | Should -BeLike "Cannot ask whether to convert '$($script:source)': *"
+                Get-ChildItem -Path $script:tempDir.FullName -Filter '*.png' | Should -BeNullOrEmpty
+            }
+
+            It 'Should report the exception of ShouldProcess as ConfirmationFailed in this session' {
+                # The same path in-process: ShouldProcess fails the way it does in a host without a user interface.
+                Use-RealMethodInvoker
+                Mock -ModuleName $script:moduleName -CommandName Invoke-ImageConverterMethod -ParameterFilter { $Name -eq 'ShouldProcess' } -MockWith {
+                    [PSCustomObject] @{ Result = $null; Exception = [System.Management.Automation.Host.HostException]::new('The host cannot prompt.'); Arguments = $ArgumentList }
+                }
+
+                $result = Convert-Image -LiteralPath $script:source, $script:secondSource -Format Png -ErrorAction SilentlyContinue -ErrorVariable conversionError
+
+                $result | Should -BeNullOrEmpty
+                $conversionError | Should -HaveCount 2
+                $conversionError.FullyQualifiedErrorId | Sort-Object -Unique | Should -Be 'ConfirmationFailed,Convert-Image'
+                "$($conversionError[0])" | Should -Be "Cannot ask whether to convert '$($script:source)': The host cannot prompt."
+                Get-ChildItem -Path $script:tempDir.FullName -Filter '*.png' | Should -BeNullOrEmpty
+            }
+
+            It 'Should write no error record when the pipeline is stopped at the prompt' {
+                # Ctrl+C at the prompt: the pipeline is stopping, so the next command call ends the cmdlet anyway.
+                Use-RealMethodInvoker
+                Mock -ModuleName $script:moduleName -CommandName Invoke-ImageConverterMethod -ParameterFilter { $Name -eq 'ShouldProcess' } -MockWith {
+                    [PSCustomObject] @{ Result = $null; Exception = [System.Management.Automation.PipelineStoppedException]::new(); Arguments = $ArgumentList }
+                }
+
+                $result = Convert-Image -LiteralPath $script:source -Format Png -ErrorVariable conversionError
+
+                $result | Should -BeNullOrEmpty
+                $conversionError | Should -BeNullOrEmpty
+                Get-ChildItem -Path $script:tempDir.FullName -Filter '*.png' | Should -BeNullOrEmpty
+            }
+
+            It 'Should let -Confirm:$false given to Convert-Image win over the caller''s $ConfirmPreference' {
+                $result = Invoke-WithoutUserInterface -Script "& { `$ConfirmPreference = 'Low'; $($script:conversion) -Confirm:`$false }"
+
+                $result.Errors | Should -BeNullOrEmpty
+                $result.Output | Should -HaveCount 2
+            }
+
+            It 'Should report ConfirmationFailed in pwsh -NonInteractive' {
+                $command = "Import-Module -Name '$script:manifestPath'; $($script:conversion) -Confirm -ErrorVariable conversionError 2>`$null; `$conversionError.Count; `$conversionError[0].FullyQualifiedErrorId"
+
+                $output = & (Get-Process -Id $PID).Path -NoProfile -NonInteractive -Command $command
+
+                $output | Should -Be @('2', 'ConfirmationFailed,Convert-Image')
+                Get-ChildItem -Path $script:tempDir.FullName -Filter '*.png' | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'Should follow $VerbosePreference and $WarningPreference of the calling script' {
+            $exifSource = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'exif.png') -Format Png -Exif
+
+            # Without the caller's values the EXIF warning would be shown and the verbose message not.
+            $streams = & {
+                $VerbosePreference = 'Continue'
+                $WarningPreference = 'SilentlyContinue'
+                Convert-Image -LiteralPath $exifSource.FullName -Format Tiff -Quality 50
+            } 3>&1 4>&1
+
+            "$($streams | Where-Object -FilterScript { $_ -is [System.Management.Automation.VerboseRecord] })" | Should -Match 'Quality is ignored'
+            $streams | Where-Object -FilterScript { $_ -is [System.Management.Automation.WarningRecord] } | Should -BeNullOrEmpty
+            $streams | Where-Object -FilterScript { $_ -is [System.IO.FileInfo] } | Should -HaveCount 1
         }
     }
 
@@ -714,6 +932,14 @@ Describe 'Convert-Image' {
             $info.Width | Should -Be 64
         }
 
+        It 'Should convert the files described by Get-ImageInfo' {
+            $result = Get-ImageInfo -LiteralPath $script:bracketSource | Convert-Image -Format Png -ErrorVariable conversionError
+
+            $conversionError | Should -BeNullOrEmpty
+            $result.Name | Should -Be 'IMG[1].png'
+            (Get-ImageInfo -LiteralPath $result.FullName).Width | Should -Be 64
+        }
+
         It 'Should pass a file with wildcard characters in its name on to a second conversion unchanged' {
             $result = Convert-Image -LiteralPath $script:bracketSource -Format Png | Convert-Image -Format WebP -ErrorVariable conversionError
 
@@ -878,6 +1104,18 @@ Describe 'Convert-Image' {
             $global:Error.Count - $errorCount | Should -Be 1
         }
 
+        It 'Should write InvalidWildcardPattern also when no file of that name exists' {
+            $pattern = Join-Path -Path $script:tempDir.FullName -ChildPath 'zz[.heic'
+            $errorCount = $global:Error.Count
+
+            $null = Convert-Image -Path $pattern -Format Png -ErrorAction SilentlyContinue -ErrorVariable conversionError
+
+            $conversionError | Should -HaveCount 1
+            $conversionError[0].FullyQualifiedErrorId | Should -Be 'InvalidWildcardPattern,Convert-Image'
+            $conversionError[0].TargetObject | Should -Be $pattern
+            $global:Error.Count - $errorCount | Should -Be 1
+        }
+
         It 'Should stop with the InvalidWildcardPattern id with -ErrorAction Stop' {
             { Convert-Image -Path $script:oddSource -Format Png -ErrorAction Stop } | Should -Throw -ErrorId 'InvalidWildcardPattern,Convert-Image'
         }
@@ -889,49 +1127,161 @@ Describe 'Convert-Image' {
         }
     }
 
-    Context 'When -DestinationPath cannot be used' {
-        It 'Should write exactly one InvalidDestinationPath error for a path that leaves its drive root' {
+    Context 'When -DestinationPath cannot name a folder' {
+        BeforeEach {
+            foreach ($name in 'IMG_0002.HEIC', 'IMG_0003.HEIC')
+            {
+                Copy-Item -Path $script:fixture -Destination (Join-Path -Path $script:tempDir.FullName -ChildPath $name)
+            }
+            $script:pattern = Join-Path -Path $script:tempDir.FullName -ChildPath '*.HEIC'
+            $script:file = Join-Path -Path $script:tempDir.FullName -ChildPath 'file.txt'
+            Set-Content -Path $script:file -Value 'x'
+
+            # A drive whose root is the test folder, for a path that climbs above the root.
             $null = New-PSDrive -Name 'PsicRoot' -PSProvider FileSystem -Root $script:tempDir.FullName -Scope Global
+
+            # A junction (Windows) or symbolic link (Linux, macOS) whose target folder is gone.
+            $script:danglingLink = Join-Path -Path $script:tempDir.FullName -ChildPath 'dangling'
+            $linkTarget = New-Item -ItemType Directory -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'gone')
+            $linkType = 'SymbolicLink'
+            if ($IsWindows)
+            {
+                $linkType = 'Junction'
+            }
+            $null = New-Item -ItemType $linkType -Path $script:danglingLink -Target $linkTarget.FullName
+            Remove-Item -LiteralPath $linkTarget.FullName
+        }
+
+        AfterEach {
+            Remove-PSDrive -Name 'PsicRoot' -Scope Global
+        }
+
+        It 'Should stop the call for 3 sources with one terminating <ErrorId> error for <Case>, WhatIf <WhatIf>' -ForEach @(
+            @{ Case = 'a file'; ErrorId = 'DestinationNotDirectory'; Destination = 'file'; WhatIf = $false }
+            @{ Case = 'a file'; ErrorId = 'DestinationNotDirectory'; Destination = 'file'; WhatIf = $true }
+            @{ Case = 'a folder below a file'; ErrorId = 'DestinationNotDirectory'; Destination = 'below-file'; WhatIf = $false }
+            @{ Case = 'a link whose target is gone'; ErrorId = 'DestinationNotDirectory'; Destination = 'dangling'; WhatIf = $false }
+            @{ Case = 'a folder below a link whose target is gone'; ErrorId = 'DestinationNotDirectory'; Destination = 'below-dangling'; WhatIf = $true }
+            @{ Case = 'a path of another provider'; ErrorId = 'UnsupportedProvider'; Destination = 'Env:\Pictures'; WhatIf = $false }
+            @{ Case = 'the root of another provider'; ErrorId = 'UnsupportedProvider'; Destination = 'Function:\'; WhatIf = $true }
+            @{ Case = 'an unknown provider'; ErrorId = 'InvalidDestinationPath'; Destination = 'NoSuchProvider::C:\out'; WhatIf = $false }
+            @{ Case = 'an unknown drive'; ErrorId = 'InvalidDestinationPath'; Destination = 'PsicNoSuchDrive:\out'; WhatIf = $false }
+            @{ Case = 'a drive-qualified path that climbs above the drive root'; ErrorId = 'InvalidDestinationPath'; Destination = 'PsicRoot:/../../x'; WhatIf = $false }
+            @{ Case = 'a NUL character'; ErrorId = 'InvalidDestinationPath'; Destination = 'nul-character'; WhatIf = $false }
+            @{ Case = 'white space only'; ErrorId = 'InvalidDestinationPath'; Destination = ' '; WhatIf = $false }
+            @{ Case = 'a provider-qualified path without a folder'; ErrorId = 'InvalidDestinationPath'; Destination = 'Microsoft.PowerShell.Core\FileSystem::'; WhatIf = $true }
+            if ($IsWindows)
+            {
+                @{ Case = 'a character Windows does not allow'; ErrorId = 'InvalidDestinationPath'; Destination = 'pipe-character'; WhatIf = $false }
+            }
+        ) {
+            $destinationPath = switch ($Destination)
+            {
+                'file' { $script:file }
+                'below-file' { Join-Path -Path $script:file -ChildPath 'sub' }
+                'dangling' { $script:danglingLink }
+                'below-dangling' { Join-Path -Path $script:danglingLink -ChildPath 'sub' }
+                'nul-character' { Join-Path -Path $script:tempDir.FullName -ChildPath "a`0b" }
+                'pipe-character' { Join-Path -Path $script:tempDir.FullName -ChildPath 'a|b' }
+                default { $Destination }
+            }
+            $errorCount = $global:Error.Count
+            $result = $null
+            $caught = $null
+
+            # No -ErrorAction Stop: a parameter error is terminating by itself.
             try
             {
-                $errorCount = $global:Error.Count
+                $result = Convert-Image -Path $script:pattern -Format Png -DestinationPath $destinationPath -WhatIf:$WhatIf -ErrorAction SilentlyContinue -ErrorVariable conversionError
+            }
+            catch
+            {
+                $caught = $_
+            }
 
-                $null = Convert-Image -Path $script:source -Format Png -DestinationPath 'PsicRoot:/../../x' -ErrorAction SilentlyContinue -ErrorVariable conversionError
+            $caught.FullyQualifiedErrorId | Should -Be "$ErrorId,Convert-Image"
+            $caught.CategoryInfo.Category | Should -Be 'InvalidArgument'
+            $caught.TargetObject | Should -Be $destinationPath
+            $global:Error.Count - $errorCount | Should -Be 1
+            $conversionError | Should -HaveCount 1
+            $result | Should -BeNullOrEmpty
+            Get-ChildItem -Path $script:tempDir.FullName -Recurse -Force | Where-Object -FilterScript { $_.Extension -ne '.HEIC' -and $_.Name -notin @('file.txt', 'dangling') } | Should -BeNullOrEmpty
+            Get-Content -Path $script:file | Should -Be 'x'
+        }
 
-                $conversionError | Should -HaveCount 1
-                $conversionError[0].FullyQualifiedErrorId | Should -Be 'InvalidDestinationPath,Convert-Image'
-                $global:Error.Count - $errorCount | Should -Be 1
-                { Convert-Image -Path $script:source -Format Png -DestinationPath 'PsicRoot:/../../x' -ErrorAction Stop } | Should -Throw -ErrorId 'InvalidDestinationPath,Convert-Image'
+        It 'Should keep a relative path that climbs above the drive root at the root, as other cmdlets do' {
+            Push-Location -LiteralPath 'PsicRoot:\'
+            try
+            {
+                $result = Convert-Image -LiteralPath $script:source -Format Png -DestinationPath '../../climbed'
             }
             finally
             {
-                Remove-PSDrive -Name 'PsicRoot' -Scope Global
+                Pop-Location
             }
+
+            $result.FullName | Should -Be (Join-Path -Path $script:tempDir.FullName -ChildPath 'climbed/IMG_0001.png')
         }
 
-        It 'Should write an UnsupportedProvider error for the root <Root> of another provider' -ForEach @(
-            @{ Root = 'Env:\' }
-            @{ Root = 'Function:\' }
-        ) {
-            $null = Convert-Image -Path $script:source -Format Png -DestinationPath $Root -ErrorAction SilentlyContinue -ErrorVariable conversionError
+        It 'Should write ImageWriteFailed for each file when the destination folder cannot be created' -Skip:(-not $IsWindows) {
+            # A folder that denies creating subfolders: the destination itself is valid, so the check in begin lets it pass.
+            $locked = New-Item -ItemType Directory -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'locked')
+            $acl = Get-Acl -LiteralPath $locked.FullName
+            $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.WindowsIdentity]::GetCurrent().User, 'CreateDirectories, CreateFiles', 'Deny'))
+            Set-Acl -LiteralPath $locked.FullName -AclObject $acl
+            try
+            {
+                $result = Convert-Image -Path $script:pattern -Format Png -DestinationPath (Join-Path -Path $locked.FullName -ChildPath 'out') -ErrorAction SilentlyContinue -ErrorVariable conversionError
+            }
+            finally
+            {
+                $acl = Get-Acl -LiteralPath $locked.FullName
+                $null = $acl.RemoveAccessRuleAll([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.WindowsIdentity]::GetCurrent().User, 'CreateDirectories', 'Deny'))
+                Set-Acl -LiteralPath $locked.FullName -AclObject $acl
+            }
 
-            $conversionError | Should -HaveCount 1
-            $conversionError[0].FullyQualifiedErrorId | Should -Be 'UnsupportedProvider,Convert-Image'
+            $result | Should -BeNullOrEmpty
+            $conversionError | Should -HaveCount 3
+            $conversionError.FullyQualifiedErrorId | Sort-Object -Unique | Should -Be 'ImageWriteFailed,Convert-Image'
         }
 
-        It 'Should write a DestinationNotDirectory error when a parent folder of the destination is a file, also with -WhatIf' {
-            $file = Join-Path -Path $script:tempDir.FullName -ChildPath 'file.txt'
-            Set-Content -Path $file -Value 'x'
-            $destination = Join-Path -Path $file -ChildPath 'sub'
+        It 'Should stop also when no file is piped in' {
+            { @() | Convert-Image -Format Png -DestinationPath $script:file } | Should -Throw -ErrorId 'DestinationNotDirectory,Convert-Image'
+        }
 
-            $null = Convert-Image -Path $script:source -Format Png -DestinationPath $destination -WhatIf -ErrorAction SilentlyContinue -ErrorVariable predictedError
-            $null = Convert-Image -Path $script:source -Format Png -DestinationPath $destination -ErrorAction SilentlyContinue -ErrorVariable conversionError
+        It 'Should end only the statement, so a script goes on with the next one' {
+            $command = "Import-Module -Name '$script:manifestPath'; Convert-Image -Path '$script:pattern' -Format Png -DestinationPath '$script:file' 2>`$null; 'next statement'"
 
-            $predictedError | Should -HaveCount 1
-            $predictedError[0].FullyQualifiedErrorId | Should -Be 'DestinationNotDirectory,Convert-Image'
-            $conversionError | Should -HaveCount 1
-            $conversionError[0].FullyQualifiedErrorId | Should -Be 'DestinationNotDirectory,Convert-Image'
-            Get-Content -Path $file | Should -Be 'x'
+            $output = & (Get-Process -Id $PID).Path -NoProfile -NonInteractive -Command $command
+
+            $output | Should -Be 'next statement'
+            Get-ChildItem -Path $script:tempDir.FullName -Filter '*.png' | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'When the session defines another command named Convert-Image' {
+        It 'Should make every wrapper call the module''s Convert-Image' {
+            <#
+                A separate process: a global function of that name replaces the module's exported entry,
+                which cannot be put back without importing the module again.
+            #>
+            $command = @(
+                "Import-Module -Name '$script:manifestPath'"
+                "function global:Convert-Image { 'hijacked' }"
+                "Set-Location -LiteralPath '$($script:tempDir.FullName)'"
+                "(ConvertTo-Jpeg -LiteralPath IMG_0001.HEIC).Name"
+                "(ConvertTo-Png -LiteralPath IMG_0001.HEIC).Name"
+                "(ConvertTo-WebP -LiteralPath IMG_0001.HEIC).Name"
+                "(ConvertTo-Avif -LiteralPath IMG_0001.HEIC).Name"
+                "(ConvertTo-JpegXL -LiteralPath IMG_0001.HEIC).Name"
+                "(ConvertFrom-Heic -LiteralPath IMG_0001.HEIC -Format Gif).Name"
+                "Set-Alias -Name Convert-Image -Value Get-Date -Scope Global"
+                "(ConvertFrom-Heic -LiteralPath IMG_0001.HEIC -Format Bmp).Name"
+            ) -join '; '
+
+            $output = & (Get-Process -Id $PID).Path -NoProfile -NonInteractive -Command $command
+
+            $output | Should -Be @('IMG_0001.jpg', 'IMG_0001.png', 'IMG_0001.webp', 'IMG_0001.avif', 'IMG_0001.jxl', 'IMG_0001.gif', 'IMG_0001.bmp')
         }
     }
 
@@ -944,9 +1294,10 @@ Describe 'Convert-Image' {
             $percentSource = Join-Path -Path $script:tempDir.FullName -ChildPath "$Name.heic"
             Copy-Item -LiteralPath $script:fixture -Destination $percentSource
 
-            $result = Convert-Image -LiteralPath $percentSource -Format Jpeg -ErrorVariable conversionError
+            $result = Convert-Image -LiteralPath $percentSource -Format Jpeg -ErrorVariable conversionError -WarningVariable conversionWarning
 
             $conversionError | Should -BeNullOrEmpty
+            $conversionWarning | Should -BeNullOrEmpty -Because 'the frames are counted in the file itself, not in a file sequence'
             $result.Name | Should -Be "$Name.jpg"
             Get-ChildItem -LiteralPath $script:tempDir.FullName -Force -Filter '*.tmp' | Should -BeNullOrEmpty
         }
@@ -1034,6 +1385,18 @@ Describe 'Convert-Image' {
             }
         }
 
+        It 'Should convert the colours through the CMYK profile for lossy Jxl output' {
+            $expected = Get-DisplayedColor -Path $script:cmykSource.FullName -FromCmyk
+
+            $result = Convert-Image -LiteralPath $script:cmykSource.FullName -Format Jxl
+
+            $actual = Get-DisplayedColor -Path $result.FullName
+            foreach ($channel in 0..2)
+            {
+                [System.Math]::Abs($actual[$channel] - $expected[$channel]) | Should -BeLessOrEqual 12 -Because "channel $channel is $($actual[$channel]), the source shows $($expected[$channel])"
+            }
+        }
+
         It 'Should keep CMYK and the CMYK profile for <Format> output' -ForEach @(
             @{ Format = 'Jpeg' }
             @{ Format = 'Tiff' }
@@ -1050,6 +1413,431 @@ Describe 'Convert-Image' {
             {
                 $output.Dispose()
             }
+        }
+    }
+
+    Context 'When the source has a wide-gamut ICC profile' {
+        BeforeAll {
+            # The colour a colour-managed viewer shows: the pixel converted from the embedded profile to sRGB; an untagged image is sRGB.
+            function Get-ViewerColor
+            {
+                param ([System.String] $Path)
+
+                $image = [ImageMagick.MagickImage]::new($Path)
+                try
+                {
+                    if ($null -ne $image.GetColorProfile())
+                    {
+                        $null = $image.TransformColorSpace([ImageMagick.ColorProfiles]::SRGB)
+                    }
+
+                    $color = $image.GetPixels().GetPixel(0, 0).ToColor()
+                    @([System.Int32] $color.R, [System.Int32] $color.G, [System.Int32] $color.B)
+                }
+                finally
+                {
+                    $image.Dispose()
+                }
+            }
+
+            function Get-ColorProfileByte
+            {
+                param ([System.String] $Path)
+
+                $image = [ImageMagick.MagickImage]::new($Path)
+                try
+                {
+                    $colorProfile = $image.GetColorProfile()
+                    if ($null -ne $colorProfile)
+                    {
+                        $colorProfile.ToByteArray()
+                    }
+                }
+                finally
+                {
+                    $image.Dispose()
+                }
+            }
+
+            $script:adobeRgb = [ImageMagick.ColorProfiles]::AdobeRGB1998.ToByteArray()
+        }
+
+        BeforeEach {
+            # Adobe RGB #4080C0 shows as about #0081C4; read as sRGB it would show as #4080C0, 64 levels more red.
+            $script:wideSource = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'wide.png') -Format Png -ColorProfile -Exif -Xmp
+            $script:sourceColor = Get-ViewerColor -Path $script:wideSource.FullName
+        }
+
+        It 'Should show the colours of the source in <Format> output, StripMetadata <StripMetadata>' -ForEach @(
+            foreach ($format in @('Jpeg', 'Png', 'WebP', 'Avif', 'Jxl', 'Tiff', 'Bmp', 'Gif'))
+            {
+                foreach ($strip in @($false, $true))
+                {
+                    @{ Format = $format; StripMetadata = $strip }
+                }
+            }
+        ) {
+            $result = Convert-Image -LiteralPath $script:wideSource.FullName -Format $Format -StripMetadata:$StripMetadata -DestinationPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out') -WarningAction SilentlyContinue
+
+            $script:sourceColor[0] | Should -BeLessOrEqual 8 -Because 'the fixture must differ visibly from its raw values'
+            $actual = Get-ViewerColor -Path $result.FullName
+            foreach ($channel in 0..2)
+            {
+                [System.Math]::Abs($actual[$channel] - $script:sourceColor[$channel]) | Should -BeLessOrEqual 6 -Because "channel $channel shows $($actual[$channel]), the source shows $($script:sourceColor[$channel])"
+            }
+        }
+
+        It 'Should store the ICC profile of the source in <Format> output, StripMetadata <StripMetadata>' -ForEach @(
+            foreach ($format in @('Jpeg', 'Png', 'WebP', 'Avif', 'Tiff', 'Bmp', 'Gif'))
+            {
+                foreach ($strip in @($false, $true))
+                {
+                    @{ Format = $format; StripMetadata = $strip }
+                }
+            }
+        ) {
+            $result = Convert-Image -LiteralPath $script:wideSource.FullName -Format $Format -StripMetadata:$StripMetadata -DestinationPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out') -WarningAction SilentlyContinue
+
+            Get-ColorProfileByte -Path $result.FullName | Should -Be $script:adobeRgb
+        }
+
+        It 'Should store sRGB instead of the ICC profile in lossy Jxl output, StripMetadata <StripMetadata>' -ForEach @(
+            @{ StripMetadata = $false }
+            @{ StripMetadata = $true }
+        ) {
+            $result = Convert-Image -LiteralPath $script:wideSource.FullName -Format Jxl -StripMetadata:$StripMetadata
+
+            $output = [ImageMagick.MagickImage]::new($result.FullName)
+            try
+            {
+                # The JPEG XL decoder describes the sRGB colour encoding of the file with a generated profile.
+                $output.GetColorProfile().ToByteArray() | Should -Not -Be $script:adobeRgb
+                $output.GetAttribute('icc:description') | Should -Be 'sRGB'
+                $color = $output.GetPixels().GetPixel(0, 0).ToColor()
+                [System.Math]::Abs([System.Int32] $color.R - $script:sourceColor[0]) | Should -BeLessOrEqual 6 -Because 'the pixels themselves are sRGB'
+            }
+            finally
+            {
+                $output.Dispose()
+            }
+        }
+
+        It 'Should keep the ICC profile and the pixels in lossless Jxl output (-Quality 100), StripMetadata <StripMetadata>' -ForEach @(
+            @{ StripMetadata = $false }
+            @{ StripMetadata = $true }
+        ) {
+            $result = Convert-Image -LiteralPath $script:wideSource.FullName -Format Jxl -Quality 100 -StripMetadata:$StripMetadata -Verbose 4>&1
+
+            $file = $result | Where-Object -FilterScript { $_ -is [System.IO.FileInfo] }
+            Get-ColorProfileByte -Path $file.FullName | Should -Be $script:adobeRgb
+            $actual = Get-ViewerColor -Path $file.FullName
+            $actual | Should -Be $script:sourceColor
+            "$($result | Where-Object -FilterScript { $_ -is [System.Management.Automation.VerboseRecord] })" | Should -Not -Match 'sRGB'
+        }
+
+        It 'Should report the conversion to sRGB for lossy Jxl in the verbose stream' {
+            $verbose = Convert-Image -LiteralPath $script:wideSource.FullName -Format Jxl -Quality 75 -Verbose 4>&1 | Where-Object -FilterScript { $_ -is [System.Management.Automation.VerboseRecord] }
+
+            "$verbose" | Should -BeLike "*Converted the colours to sRGB, because lossy Jxl output stores no ICC colour profile: $($script:wideSource.FullName)*"
+        }
+
+        It 'Should not convert a source without ICC profile' {
+            $verbose = Convert-Image -LiteralPath $script:source -Format Jxl -Verbose 4>&1 | Where-Object -FilterScript { $_ -is [System.Management.Automation.VerboseRecord] }
+
+            "$verbose" | Should -Not -Match 'sRGB'
+        }
+    }
+
+    Context 'When the source has transparent pixels' {
+        BeforeAll {
+            function Get-BlockColor
+            {
+                param ([System.String] $Path)
+
+                $image = [ImageMagick.MagickImage]::new($Path)
+                try
+                {
+                    foreach ($x in @(8, 24, 40))
+                    {
+                        $color = $image.GetPixels().GetPixel($x, 8).ToColor()
+                        , @([System.Int32] $color.R, [System.Int32] $color.G, [System.Int32] $color.B, [System.Int32] $color.A)
+                    }
+                }
+                finally
+                {
+                    $image.Dispose()
+                }
+            }
+        }
+
+        BeforeEach {
+            # Blocks: transparent black, red with alpha 128, opaque blue.
+            $script:transparentSource = New-TestTransparentImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'logo.png')
+        }
+
+        It 'Should flatten the transparent pixels onto white for Jpeg output' {
+            $result = Convert-Image -LiteralPath $script:transparentSource.FullName -Format Jpeg -Quality 100
+
+            $output = [ImageMagick.MagickImage]::new($result.FullName)
+            try
+            {
+                $output.HasAlpha | Should -BeFalse
+            }
+            finally
+            {
+                $output.Dispose()
+            }
+
+            $expected = @(@(255, 255, 255), @(255, 128, 128), @(0, 0, 255))
+            $blocks = Get-BlockColor -Path $result.FullName
+            foreach ($block in 0..2)
+            {
+                foreach ($channel in 0..2)
+                {
+                    [System.Math]::Abs($blocks[$block][$channel] - $expected[$block][$channel]) | Should -BeLessOrEqual 4 -Because "block $block channel $channel is $($blocks[$block][$channel])"
+                }
+            }
+        }
+
+        It 'Should flatten a CMYK source with transparent pixels onto paper white for Jpeg output, with profile <WithProfile>' -ForEach @(
+            @{ WithProfile = $true }
+            @{ WithProfile = $false }
+        ) {
+            # A print cut-out: CMYK with alpha. Jpeg keeps CMYK, so white has to be C = M = Y = K = 0 there.
+            $cmykSource = New-TestTransparentImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'cutout.tif') -Cmyk -WithoutColorProfile:(-not $WithProfile)
+
+            $result = Convert-Image -LiteralPath $cmykSource.FullName -Format Jpeg -Quality 100
+
+            $output = [ImageMagick.MagickImage]::new($result.FullName)
+            try
+            {
+                $output.ColorSpace | Should -Be 'CMYK'
+                $output.HasAlpha | Should -BeFalse
+                # The colour a viewer shows: through the embedded profile, or SWOP for an untagged CMYK file.
+                if ($null -ne $output.GetColorProfile())
+                {
+                    $null = $output.TransformColorSpace([ImageMagick.ColorProfiles]::SRGB)
+                }
+                else
+                {
+                    $null = $output.TransformColorSpace([ImageMagick.ColorProfiles]::USWebCoatedSWOP, [ImageMagick.ColorProfiles]::SRGB)
+                }
+
+                $transparent = $output.GetPixels().GetPixel(8, 8).ToColor()
+                $half = $output.GetPixels().GetPixel(24, 8).ToColor()
+                $opaque = $output.GetPixels().GetPixel(40, 8).ToColor()
+            }
+            finally
+            {
+                $output.Dispose()
+            }
+
+            foreach ($channel in @($transparent.R, $transparent.G, $transparent.B))
+            {
+                $channel | Should -BeGreaterOrEqual 250 -Because 'the transparent block is white'
+            }
+            # Red at alpha 128 on white is light red: lighter in G and B than the opaque blue block, R stays high.
+            $half.R | Should -BeGreaterOrEqual 230
+            $half.G | Should -BeGreaterOrEqual 100
+            $half.B | Should -BeGreaterOrEqual 90
+            $opaque.B | Should -BeGreaterThan $opaque.R -Because 'the opaque block stays blue'
+        }
+
+        It 'Should keep the colours and the alpha of a palette PNG with <ColorCount> colour(s) in Tiff output' -ForEach @(
+            @{ ColorCount = 1; Depth = 1 }
+            @{ ColorCount = 2; Depth = 2 }
+            @{ ColorCount = 5; Depth = 4 }
+        ) {
+            $paletteSource = New-TestPaletteImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'logo.png') -ColorCount $ColorCount
+            $sourceImage = [ImageMagick.MagickImage]::new($paletteSource.FullName)
+            try
+            {
+                $sourceImage.Depth | Should -Be $Depth -Because 'the fixture must be a palette PNG of that bit depth'
+            }
+            finally
+            {
+                $sourceImage.Dispose()
+            }
+
+            $result = Convert-Image -LiteralPath $paletteSource.FullName -Format Tiff
+
+            $output = [ImageMagick.MagickImage]::new($result.FullName)
+            try
+            {
+                foreach ($y in @(8, 14))
+                {
+                    $color = $output.GetPixels().GetPixel(8, $y).ToColor()
+                    $expected = @(200, 60, 60, $(if ($y -eq 8) { 255 } else { 128 }))
+                    $actual = @([System.Int32] $color.R, [System.Int32] $color.G, [System.Int32] $color.B, [System.Int32] $color.A)
+                    foreach ($channel in 0..3)
+                    {
+                        [System.Math]::Abs($actual[$channel] - $expected[$channel]) | Should -BeLessOrEqual 2 -Because "row $y channel $channel is $($actual[$channel])"
+                    }
+                }
+            }
+            finally
+            {
+                $output.Dispose()
+            }
+        }
+
+        It 'Should keep the alpha channel in <Format> output' -ForEach @(
+            @{ Format = 'Png'; HalfAlpha = 128 }
+            @{ Format = 'WebP'; HalfAlpha = 128 }
+            @{ Format = 'Avif'; HalfAlpha = 128 }
+            @{ Format = 'Jxl'; HalfAlpha = 128 }
+            @{ Format = 'Tiff'; HalfAlpha = 128 }
+            @{ Format = 'Bmp'; HalfAlpha = 128 }
+            # GIF has only fully transparent or opaque pixels.
+            @{ Format = 'Gif'; HalfAlpha = 255 }
+        ) {
+            $result = Convert-Image -LiteralPath $script:transparentSource.FullName -Format $Format -DestinationPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out')
+
+            $blocks = Get-BlockColor -Path $result.FullName
+            $blocks[0][3] | Should -BeLessOrEqual 2
+            [System.Math]::Abs($blocks[1][3] - $HalfAlpha) | Should -BeLessOrEqual 2
+            $blocks[1][0] | Should -BeGreaterOrEqual 250
+            $blocks[2][3] | Should -Be 255
+        }
+    }
+
+    Context 'When the source has several frames' {
+        It 'Should warn and convert the first frame of a 3-frame <Format> source' -ForEach @(
+            @{ Format = 'Gif'; Extension = '.gif' }
+            @{ Format = 'WebP'; Extension = '.webp' }
+            @{ Format = 'Tiff'; Extension = '.tif' }
+        ) {
+            $frames = New-TestFrameImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath "anim$Extension") -Format $Format -FrameCount 3
+            $errorCount = $global:Error.Count
+
+            $result = Convert-Image -LiteralPath $frames.FullName -Format Png -WarningAction SilentlyContinue -WarningVariable frameWarning -ErrorVariable frameError
+
+            $? | Should -BeTrue
+            $frameError | Should -BeNullOrEmpty
+            $global:Error.Count - $errorCount | Should -Be 0 -Because 'counting the frames writes no error record'
+            $frameWarning | Should -HaveCount 1
+            "$($frameWarning[0])" | Should -Be "Only the first of 3 frames is converted: $($frames.FullName)"
+            $output = [ImageMagick.MagickImageCollection]::new($result.FullName)
+            try
+            {
+                $output | Should -HaveCount 1
+                $color = $output[0].GetPixels().GetPixel(8, 8).ToColor()
+                $color.R | Should -BeGreaterOrEqual 240 -Because 'the first frame is red'
+                $color.G + $color.B | Should -BeLessOrEqual 16 -Because 'the first frame is red'
+            }
+            finally
+            {
+                $output.Dispose()
+            }
+        }
+
+        It 'Should warn once per source' {
+            $first = New-TestFrameImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'a.gif') -FrameCount 3
+            $second = New-TestFrameImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'b[1].gif') -FrameCount 2
+
+            $result = Convert-Image -LiteralPath $first.FullName, $second.FullName -Format WebP -WarningAction SilentlyContinue -WarningVariable frameWarning
+
+            $result | Should -HaveCount 2
+            @($frameWarning | ForEach-Object -Process { "$_" }) | Should -Be @(
+                "Only the first of 3 frames is converted: $($first.FullName)"
+                "Only the first of 2 frames is converted: $($second.FullName)"
+            )
+        }
+
+        It 'Should count the frames of a source named <Name>, which ImageMagick would interpret' -ForEach @(
+            @{ Name = 'seq%03d.gif' }
+            @{ Name = 'a%x.gif' }
+            @{ Name = 'scan[1]' }
+        ) {
+            $frames = New-TestFrameImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'frames.gif') -FrameCount 3
+            $source = Join-Path -Path $script:tempDir.FullName -ChildPath $Name
+            Move-Item -LiteralPath $frames.FullName -Destination $source
+
+            $result = Convert-Image -LiteralPath $source -Format Png -WarningAction SilentlyContinue -WarningVariable frameWarning -ErrorVariable frameError
+
+            $frameError | Should -BeNullOrEmpty
+            $result | Should -HaveCount 1
+            "$frameWarning" | Should -Be "Only the first of 3 frames is converted: $source"
+        }
+
+        It 'Should warn for a HEIC file with two images' {
+            $source = Join-Path -Path $script:tempDir.FullName -ChildPath 'burst.heic'
+            Copy-Item -LiteralPath (Join-Path -Path (Split-Path -Path $script:fixture -Parent) -ChildPath 'two-images.heic') -Destination $source
+
+            $null = Convert-Image -LiteralPath $source -Format Jpeg -WarningAction SilentlyContinue -WarningVariable frameWarning
+
+            "$frameWarning" | Should -Be "Only the first of 2 frames is converted: $source"
+        }
+
+        It 'Should not warn for <Name>' -ForEach @(
+            @{ Name = 'sample.heic' }
+            @{ Name = 'thumbnail.heic' }
+        ) {
+            $source = Join-Path -Path $script:tempDir.FullName -ChildPath $Name
+            Copy-Item -LiteralPath (Join-Path -Path (Split-Path -Path $script:fixture -Parent) -ChildPath $Name) -Destination $source
+
+            $result = Convert-Image -LiteralPath $source -Format Jpeg -WarningVariable frameWarning
+
+            $result | Should -Not -BeNullOrEmpty
+            $frameWarning | Should -BeNullOrEmpty
+        }
+
+        It 'Should not warn for a layered Photoshop file, whose first image is the merged picture' {
+            $layers = New-TestFrameImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'layers.psd') -Format Psd -FrameCount 3
+
+            $null = Convert-Image -LiteralPath $layers.FullName -Format Png -WarningVariable frameWarning
+
+            $frameWarning | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'When the source is damaged' {
+        It 'Should warn once and still convert a JPEG cut off at 60 %' {
+            $damaged = New-TestDamagedJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'cut.jpg') -Keep 0.6
+            $errorCount = $global:Error.Count
+
+            $result = Convert-Image -LiteralPath $damaged.FullName -Format Png -WarningAction SilentlyContinue -WarningVariable damageWarning -ErrorVariable damageError
+
+            $? | Should -BeTrue
+            $damageError | Should -BeNullOrEmpty
+            # The warning handler runs inside Magick.NET, where -ErrorVariable and $? would not see an error it raised.
+            $global:Error.Count - $errorCount | Should -Be 0
+            $result.Name | Should -Be 'cut.png'
+            $damageWarning | Should -HaveCount 1
+            "$($damageWarning[0])" | Should -Be "The image may be damaged (Premature end of JPEG file; Corrupt JPEG data: premature end of data segment): $($damaged.FullName)"
+        }
+
+        It 'Should warn about an animated GIF cut off after its first frame and convert that frame' {
+            $damaged = New-TestFrameImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'cut.gif') -FrameCount 3 -Keep 0.8
+            $errorCount = $global:Error.Count
+
+            $result = Convert-Image -LiteralPath $damaged.FullName -Format Png -WarningAction SilentlyContinue -WarningVariable damageWarning -ErrorVariable damageError
+
+            $? | Should -BeTrue
+            $damageError | Should -BeNullOrEmpty
+            $global:Error.Count - $errorCount | Should -Be 0
+            $result.Name | Should -Be 'cut.png'
+            $damageWarning | Should -HaveCount 1
+            "$($damageWarning[0])" | Should -BeLike "The image may be damaged (*): $($damaged.FullName)"
+        }
+
+        It 'Should stop at the damage warning with -WarningAction Stop and write nothing' {
+            $damaged = New-TestDamagedJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'cut.jpg') -Keep 0.6
+
+            { Convert-Image -LiteralPath $damaged.FullName -Format Png -WarningAction Stop } | Should -Throw
+
+            Join-Path -Path $script:tempDir.FullName -ChildPath 'cut.png' | Should -Not -Exist
+            Get-ChildItem -Path $script:tempDir.FullName -Force -Filter '*.tmp' | Should -BeNullOrEmpty
+        }
+
+        It 'Should not warn for intact sources' {
+            $jpeg = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'photo.jpg') -Width 320 -Height 240 -Exif -ColorProfile
+            $png = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'logo.png') -Format Png -ColorProfile
+
+            $result = Convert-Image -LiteralPath $script:source, $jpeg.FullName, $png.FullName -Format WebP -WarningVariable damageWarning
+
+            $result | Should -HaveCount 3
+            $damageWarning | Should -BeNullOrEmpty
         }
     }
 

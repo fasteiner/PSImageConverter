@@ -25,27 +25,35 @@ LONG DESCRIPTION
         ConvertFrom-Heic  Converts .heic/.heif/.hif files only; -Format
                           defaults to Jpeg.
         Get-ImageInfo     Returns the format, dimensions, orientation, camera
-                          and date taken of images.
+                          and date taken of images; its objects can be piped
+                          into the conversion cmdlets.
 
     The conversion cmdlets take -Path (wildcards) or -LiteralPath (aliases
-    PSPath and LP; files piped from Get-ChildItem; folders are skipped),
-    -DestinationPath, -Quality (1 to 100, default 90, for Jpeg, WebP, Avif and
-    Jxl), -StripMetadata, -Force, -WhatIf and -Confirm, and return a FileInfo
-    object for every written file, the same object Get-Item returns, so it can
-    be piped into the next cmdlet. The output gets the base name of the source
-    and the extension of the format (.jpg, .png, .webp, .avif, .jxl, .tif,
-    .bmp, .gif). A conversion never overwrites its source file or a file
-    written earlier in the same call, also not when the folder is reached
-    through another path (a junction, a symbolic link, a subst or mapped
-    drive, a UNC path), and never leaves a truncated or temporary file behind,
-    also not when it is stopped with Ctrl+C.
+    PSPath and LP; files piped from Get-ChildItem and the objects of
+    Get-ImageInfo bind here; folders are skipped), -DestinationPath, -Quality
+    (1 to 100, default 90, for Jpeg, WebP, Avif and Jxl), -StripMetadata,
+    -Force, -WhatIf and -Confirm, and return a FileInfo object for every
+    written file, the same object Get-Item returns, so it can be piped into
+    the next cmdlet. The output gets the base name of the source and the
+    extension of the format (.jpg, .png, .webp, .avif, .jxl, .tif, .bmp,
+    .gif). A file given more than once in a call (e.g. by the patterns *.heic
+    and IMG_*) is converted or described once. A conversion never overwrites
+    its source file or a file written earlier in the same call, also not when
+    the folder is reached through another path (a junction, a symbolic link,
+    a subst or mapped drive, a UNC path), and never leaves a truncated or
+    temporary file behind, also not when it is stopped with Ctrl+C.
+
+    Wildcards skip hidden files (on Windows files with the Hidden attribute,
+    on Linux and macOS names that start with a dot), as Get-ChildItem does
+    without -Force; -LiteralPath reaches them.
 
 METADATA
     The EXIF orientation is applied to the pixels, so the output is upright.
     Without -StripMetadata the output keeps the metadata its format can carry:
 
         Jpeg, Png         EXIF, XMP, IPTC, ICC colour profile, comments
-        WebP, Avif, Jxl   EXIF, XMP, ICC colour profile
+        WebP, Avif        EXIF, XMP, ICC colour profile
+        Jxl               EXIF, XMP; ICC colour profile only at -Quality 100
         Tiff              XMP, IPTC, ICC colour profile, comments
         Gif               IPTC, ICC colour profile, comments
         Bmp               ICC colour profile
@@ -56,6 +64,14 @@ METADATA
     -StripMetadata removes EXIF (including the GPS location), XMP, IPTC and
     comments but keeps the ICC colour profile, so photos keep their colours.
 
+    Lossy Jxl output (-Quality below 100) is always sRGB, because the bundled
+    JPEG XL encoder stores an ICC colour profile only in lossless files. The
+    pixels of a source with an ICC profile (e.g. Display P3 or Adobe RGB) are
+    converted to sRGB first, so the photo looks the same; colours outside sRGB
+    are clipped. Use -Quality 100 or Avif to keep a wide gamut. A profile that
+    viewers ignore, because it is damaged or made for other pixels (a grey
+    profile in a colour image), is ignored here as well.
+
     When the orientation is applied, an EXIF thumbnail is removed (it would
     show rotated against the photo), and the XMP orientation and pixel
     dimensions are updated.
@@ -64,19 +80,95 @@ METADATA
     and Tiff output; for the other formats they are converted to sRGB through
     their CMYK profile.
 
+    Jpeg has no transparency: transparent and half-transparent pixels are
+    placed on a white background (paper white for a CMYK image). The other
+    formats keep the alpha channel (Gif only fully transparent or opaque
+    pixels).
+
+FRAMES AND DAMAGED FILES
+    Only the first frame of an animated GIF or WebP, a multi-page TIFF or a
+    HEIC file with several images is converted. A warning is written for every
+    such source: 'Only the first of <N> frames is converted: <path>'.
+
+    A source that ImageMagick can read but reports as damaged, e.g. a JPEG cut
+    off by an interrupted copy (the missing part becomes grey) or an animated
+    GIF cut off after its first frame (its frames cannot be counted then), is
+    converted with the warning 'The image may be damaged (<reasons>): <path>';
+    Get-ImageInfo writes the same warning. Other ImageMagick warnings about a
+    source go to the verbose stream.
+
     Writing HEIC files is not supported yet, because the bundled ImageMagick
     build does not contain an HEVC encoder. AVIF is the closest alternative.
 
 ERRORS
-    Errors are non-terminating: the cmdlets continue with the next file, $? is
-    $false afterwards and -ErrorAction Stop stops at the first one. Every error
-    has a stable id: PathNotFound, InvalidWildcardPattern (use -LiteralPath for
-    a name such as 'a[.jpg'), UnsupportedProvider, NotHeicFile,
-    InvalidDestinationPath, DestinationNotDirectory, TargetIsSource,
-    DuplicateTarget, TargetExists, ImageReadFailed and ImageWriteFailed.
+    Errors about a file are non-terminating: the cmdlets continue with the
+    next file, $? is $false afterwards, -ErrorVariable holds one record per
+    failed file and -ErrorAction Stop stops at the first one. Every error has
+    a stable id:
+
+        PathNotFound            the input matches no file; for a pattern the
+                                message adds that wildcards skip hidden files
+                                and that [ and ] are wildcard characters
+        InvalidWildcardPattern  -Path is not a valid pattern ('a[.jpg'); use
+                                -LiteralPath
+        UnsupportedProvider     the input is not a file system path (one error
+                                per input, also for a pattern)
+        NotHeicFile             ConvertFrom-Heic: no .heic/.heif/.hif file
+        TargetIsSource          the output would overwrite the source
+        DuplicateTarget         two sources of one call map to one output
+        TargetExists            the output exists and -Force is not set
+        ConfirmationFailed      -Confirm (or the caller's $ConfirmPreference)
+                                asks for a confirmation the host cannot show,
+                                e.g. in pwsh -NonInteractive; use
+                                -Confirm:$false
+        ImageReadFailed         the source cannot be read
+        ImageWriteFailed        the output cannot be written, or the
+                                destination folder cannot be created or
+                                written to
+
+    The target object is the source file; for PathNotFound,
+    InvalidWildcardPattern and UnsupportedProvider it is the input as given.
+
+    A -DestinationPath that cannot name a folder is a parameter error: it
+    stops the whole call with one terminating error before any file is read,
+    also with -WhatIf, and try/catch catches it without -ErrorAction Stop. The
+    ids are InvalidDestinationPath (white space only, an unknown drive or
+    provider, invalid characters, a drive-qualified path that climbs above
+    the root of its drive such as Temp:\..\x), UnsupportedProvider (not a file
+    system path) and DestinationNotDirectory (the path or one of its parent
+    folders is a file, or a junction or symbolic link whose target does not
+    exist); the target object is the -DestinationPath value. A relative path
+    that climbs above the root of its drive stays at the root, as in other
+    cmdlets. A folder that does not exist yet is created when the first file
+    is written; when that fails (no permission, a read-only file system) or
+    the folder cannot be written to, each file gets ImageWriteFailed.
+
     ConvertFrom-Heic and the ConvertTo-* cmdlets pass all files of one call to
     a single Convert-Image, so the errors it finds have the
-    FullyQualifiedErrorId '<Id>,Convert-Image'.
+    FullyQualifiedErrorId '<Id>,Convert-Image'. The checks they make before
+    carry their own name: the -DestinationPath errors of every one of them,
+    and the input errors (PathNotFound, InvalidWildcardPattern,
+    UnsupportedProvider, NotHeicFile) of ConvertFrom-Heic.
+
+    Separate calls or processes that write the same output file at the same
+    time without -Force are not coordinated: on Windows the later one fails
+    with TargetExists or ImageWriteFailed; on Linux and macOS both can succeed
+    and the later file replaces the earlier one. With -Force the later file
+    replaces the earlier one on every platform. Give parallel conversions
+    different destination folders.
+
+PREFERENCE VARIABLES
+    Like compiled cmdlets, the cmdlets follow the preference variables of
+    their caller ($WhatIfPreference, $ConfirmPreference,
+    $ErrorActionPreference, $WarningPreference, $InformationPreference,
+    $VerbosePreference, $DebugPreference), also when a script or function
+    sets them in its own scope. Functions of a script module do not see such
+    values by themselves (PowerShell issue #4568), so each cmdlet copies them
+    when it starts. A function with SupportsShouldProcess that is called with
+    -WhatIf therefore passes it on, and $ErrorActionPreference = 'Stop' in a
+    script makes the first error terminating. A common parameter given to the
+    cmdlet itself (-WhatIf, -Confirm, -ErrorAction, -WarningAction,
+    -InformationAction, -Verbose, -Debug) wins.
 
 EXAMPLES
     PS C:\> ConvertFrom-Heic -Path .\IMG_1234.HEIC
@@ -90,6 +182,8 @@ EXAMPLES
     PS C:\> Convert-Image -Path C:\Pictures\*.png -Format Tiff -WhatIf
 
     PS C:\> Get-ChildItem -Path C:\Pictures -Filter *.heic | Get-ImageInfo
+
+    PS C:\> Get-ImageInfo -Path .\*.heic | Where-Object -Property Width -GT 4000 | ConvertTo-Jpeg
 
 NOTE:
     Thank you to all those who contributed to this module, by writing code,

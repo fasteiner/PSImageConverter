@@ -5,20 +5,29 @@ function Convert-ImageConverterImage
         Converts a single image file with Magick.NET and returns the written file.
 
         .DESCRIPTION
-        Reads the source image, applies the EXIF orientation to the pixels (auto-orient) and
-        updates the metadata that still describes the stored orientation, converts CMYK pixels
-        to sRGB for formats that cannot store CMYK, optionally strips the metadata but keeps the
-        ICC colour profile, sets the quality for lossy output formats and writes the image in
-        the requested format. The image is written into a temporary file in the target folder
-        first, through a stream so ImageMagick does not interpret the file name, and then moved
-        over the target, so a failed or stopped conversion never leaves a truncated target file
-        or the temporary file behind; the target folder is created when it does not exist. With
-        Force, the ReadOnly and Hidden attributes of an existing target are cleared before it is
-        replaced and restored when it cannot be replaced.
+        Reads the first frame of the source image, applies the EXIF orientation to the pixels
+        (auto-orient) and updates the metadata that still describes the stored orientation,
+        converts CMYK pixels to sRGB for formats that cannot store CMYK, converts the pixels of
+        a source with an ICC profile that matches them (colour or grey) to sRGB for lossy Jxl
+        output (Quality below 100), whose encoder stores no ICC profile, optionally strips the
+        metadata but keeps the ICC colour profile, flattens transparent pixels onto white for
+        Jpeg output (CMYK white for a CMYK image), writes Tiff output of an image with alpha
+        with at least 8 bits per sample, sets the quality for lossy output formats and writes
+        the image in the requested format; Png output gets the ICC profile only as iCCP chunk,
+        and an RGB colour type when an RGB profile is kept for neutral grey pixels. The image is
+        written into a temporary file in the target folder first, through a stream so
+        ImageMagick does not interpret the file name, and then moved over the target, so a
+        failed or stopped conversion never leaves a truncated target file or the temporary file
+        behind; the target folder is created when it does not exist. With Force, the ReadOnly
+        and Hidden attributes of an existing target are cleared before it is replaced and
+        restored when it cannot be replaced.
         Failures are written as non-terminating errors through the cmdlet passed in -Cmdlet:
         ImageReadFailed when the source cannot be read, ImageWriteFailed when the target
-        cannot be written. For output formats that cannot carry EXIF data (Tiff, Bmp, Gif) a
-        warning is written when the source has EXIF data and StripMetadata is not set.
+        cannot be written. Warnings are written through the same cmdlet: when ImageMagick
+        reports the source as damaged (it is converted anyway; a warning that the caller turns
+        into a stop still disposes the decoded image), when the source has more than one frame
+        and only the first is converted, and, for output formats that cannot carry EXIF data
+        (Tiff, Bmp, Gif), when the source has EXIF data and StripMetadata is not set.
         Returns the written file as the FileSystem provider returns it (a FileInfo with PSPath),
         or nothing after a failure.
 
@@ -85,7 +94,7 @@ function Convert-ImageConverterImage
 
     $formatInfo = Get-ImageConverterFormatInfo -Format $Format
 
-    $read = Read-ImageConverterImage -Path $SourcePath
+    $read = Read-ImageConverterImage -Path $SourcePath -CountFrames
     if ($null -ne $read.Exception)
     {
         Write-ImageConverterError -Cmdlet $Cmdlet -Exception $read.Exception -ErrorId 'ImageReadFailed' -Category 'InvalidData' -TargetObject $SourcePath -MessagePrefix "Cannot read image '$SourcePath'"
@@ -93,6 +102,26 @@ function Convert-ImageConverterImage
     }
 
     $image = $read.Result
+
+    <#
+        With -WarningAction Stop the warning about a damaged source ends the call. The image is
+        disposed then, too; the try block below cannot take the warning, because its catch would
+        turn the stop into an ImageWriteFailed error.
+    #>
+    $warned = $false
+    try
+    {
+        Write-ImageConverterReadWarning -Cmdlet $Cmdlet -Path $SourcePath -Warning $read.Warnings
+        $warned = $true
+    }
+    finally
+    {
+        if (-not $warned)
+        {
+            $image.Dispose()
+        }
+    }
+
     $targetFolder = [System.IO.Path]::GetDirectoryName($TargetPath)
 
     # A short name that does not contain the target name stays within the file name length limit whenever the target does.
@@ -113,6 +142,7 @@ function Convert-ImageConverterImage
             Repair-ImageConverterProfileOrientation -Image $image
         }
 
+        $isSrgb = $false
         if (-not $formatInfo.SupportsCmyk -and $image.ColorSpace -eq [ImageMagick.ColorSpace]::CMYK)
         {
             <#
@@ -120,7 +150,41 @@ function Convert-ImageConverterImage
                 profile, and the JPEG XL encoder stores C, M and Y as R, G and B. The conversion uses
                 the embedded CMYK profile; the SWOP profile is used only for a source without one.
             #>
-            $null = $image.TransformColorSpace([ImageMagick.ColorProfiles]::USWebCoatedSWOP, [ImageMagick.ColorProfiles]::SRGB)
+            $isSrgb = $image.TransformColorSpace([ImageMagick.ColorProfiles]::USWebCoatedSWOP, [ImageMagick.ColorProfiles]::SRGB)
+        }
+
+        $sourceProfile = $image.GetColorProfile()
+        if ($Format -eq 'Jxl' -and $Quality -lt 100 -and -not $isSrgb -and $null -ne $sourceProfile)
+        {
+            <#
+                ImageMagick's JPEG XL encoder writes the ICC profile only for lossless output
+                (quality 100). Lossy output is tagged sRGB without converting the pixels, so a
+                wide-gamut photo (Adobe RGB, Display P3) would look washed out. The pixels are
+                converted to sRGB instead; colours outside sRGB are clipped. Viewers ignore a
+                profile that is damaged or made for other pixels (a grey profile in a colour image
+                or the other way round), so such pixels are written unchanged; ImageMagick would
+                turn a colour image grey through a grey profile.
+            #>
+            $profileIsGray = $sourceProfile.ColorSpace -eq [ImageMagick.ColorSpace]::Gray
+            $imageIsGray = $image.ColorSpace -in @([ImageMagick.ColorSpace]::Gray, [ImageMagick.ColorSpace]::LinearGray)
+
+            if ($profileIsGray -ne $imageIsGray)
+            {
+                Write-Verbose -Message "The ICC colour profile is made for $(if ($profileIsGray) { 'grey' } else { 'colour' }) pixels and does not match the image, so the colours are written unchanged: $SourcePath"
+            }
+            else
+            {
+                $transform = Invoke-ImageConverterMethod -InputObject $image -Name 'TransformColorSpace' -ArgumentList ([ImageMagick.ColorProfiles]::SRGB)
+
+                if ($null -ne $transform.Exception)
+                {
+                    Write-Verbose -Message "The ICC colour profile cannot be applied ($($transform.Exception.Message)), so the colours are written unchanged: $SourcePath"
+                }
+                elseif ($transform.Result)
+                {
+                    Write-Verbose -Message "Converted the colours to sRGB, because lossy Jxl output stores no ICC colour profile: $SourcePath"
+                }
+            }
         }
 
         if ($StripMetadata)
@@ -148,12 +212,41 @@ function Convert-ImageConverterImage
             }
         }
 
+        if ($Format -eq 'Jpeg' -and $image.HasAlpha)
+        {
+            <#
+                JPEG has no alpha channel; without this the colour stored under transparent pixels
+                (often black) would show. ImageMagick uses the numbers of the background colour as
+                they are in the image's colour space, so a CMYK image (Jpeg keeps CMYK) needs the
+                CMYK white C=M=Y=K=0; sRGB white would be full cyan, magenta and yellow ink there.
+            #>
+            $background = [ImageMagick.MagickColors]::White
+            if ($image.ColorSpace -eq [ImageMagick.ColorSpace]::CMYK)
+            {
+                $background = [ImageMagick.MagickColor]::new([System.Byte] 0, [System.Byte] 0, [System.Byte] 0, [System.Byte] 0, [System.Byte] 255)
+            }
+
+            $image.BackgroundColor = $background
+            $image.Alpha([ImageMagick.AlphaOption]::Remove)
+        }
+
+        if ($Format -eq 'Tiff' -and $image.HasAlpha -and $image.Depth -lt 8)
+        {
+            <#
+                A palette PNG with up to 16 colours is read with its palette bit depth (1, 2 or 4). A
+                TIFF cannot store a palette together with alpha, so ImageMagick writes RGBA samples
+                at that depth and rounds colours and alpha to 2, 4 or 16 levels. The pixels are 8 bit
+                in memory, so raising the depth changes no pixel.
+            #>
+            $image.Depth = 8
+        }
+
         if ($formatInfo.IsLossy)
         {
             $image.Quality = [System.UInt32] $Quality
         }
 
-        if (-not [System.IO.Directory]::Exists($targetFolder))
+        if ($null -eq $failure -and -not [System.IO.Directory]::Exists($targetFolder))
         {
             $failure = (Invoke-ImageConverterMethod -Type ([System.IO.Directory]) -Name 'CreateDirectory' -ArgumentList $targetFolder).Exception
         }
@@ -170,7 +263,39 @@ function Convert-ImageConverterImage
             $failure = [PSImageConverter.SafeInvoker]::Invoke([System.IO.FileStream], $null, $null, $streamArguments, [ref] $stream, [ref] $ignoredArguments)
         }
 
-        if ($null -eq $failure)
+        $pngProfile = $image.GetColorProfile()
+        if ($null -eq $failure -and $Format -eq 'Png' -and $null -ne $pngProfile)
+        {
+            # ImageMagick writes the ICC profile as iCCP chunk and once more as zTXt chunk 'Raw profile type icc'.
+            $encoded = Invoke-ImageConverterMethod -InputObject $image -Name 'ToByteArray' -ArgumentList ([ImageMagick.MagickFormat]::Png)
+            $failure = $encoded.Exception
+
+            # The colour type is byte 25 of a PNG file: its IHDR chunk comes right after the 8-byte signature.
+            if ($null -eq $failure -and $encoded.Result[25] -in @(0, 4) -and $pngProfile.ColorSpace -ne [ImageMagick.ColorSpace]::Gray)
+            {
+                <#
+                    ImageMagick writes an image whose pixels are all neutral grey as greyscale PNG (colour
+                    type 0, or 4 with alpha) but keeps its RGB profile. The PNG format allows an RGB
+                    profile only for colour images, so readers drop it; RGB (2) or RGBA (6) keeps it valid.
+                #>
+                $colorType = '2'
+                if ($encoded.Result[25] -eq 4)
+                {
+                    $colorType = '6'
+                }
+
+                $image.Settings.SetDefine([ImageMagick.MagickFormat]::Png, 'color-type', $colorType)
+                $encoded = Invoke-ImageConverterMethod -InputObject $image -Name 'ToByteArray' -ArgumentList ([ImageMagick.MagickFormat]::Png)
+                $failure = $encoded.Exception
+            }
+
+            if ($null -eq $failure)
+            {
+                $png = Select-ImageConverterPngChunk -Data $encoded.Result -ExcludeTextKeyword 'Raw profile type icc', 'Raw profile type icm'
+                $failure = (Invoke-ImageConverterMethod -InputObject $stream -Name 'Write' -ArgumentList $png, 0, $png.Length).Exception
+            }
+        }
+        elseif ($null -eq $failure)
         {
             $failure = (Invoke-ImageConverterMethod -InputObject $image -Name 'Write' -ArgumentList $stream, ([ImageMagick.MagickFormat] $Format)).Exception
         }
@@ -243,6 +368,11 @@ function Convert-ImageConverterImage
     {
         Write-ImageConverterError -Cmdlet $Cmdlet -Exception $failure -ErrorId 'ImageWriteFailed' -Category 'WriteError' -TargetObject $SourcePath -MessagePrefix "Cannot write image '$TargetPath'"
         return
+    }
+
+    if ($read.FrameCount -gt 1)
+    {
+        $Cmdlet.WriteWarning("Only the first of $($read.FrameCount) frames is converted: $SourcePath")
     }
 
     if ($hasExif -and -not $StripMetadata -and -not $formatInfo.KeepsExif)

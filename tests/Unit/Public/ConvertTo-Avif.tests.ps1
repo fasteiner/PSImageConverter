@@ -207,4 +207,28 @@ Describe 'ConvertTo-Avif' {
             (Get-ImageInfo -LiteralPath $result.FullName).Format | Should -Be 'Avif'
         }
     }
+
+    Context 'When the session has an alias named Convert-Image' {
+        It 'Should still call the module''s Convert-Image' {
+            # An alias wins over every function of the same name, in every scope.
+            function global:Invoke-PsicHijack
+            {
+                param ([Parameter(ValueFromRemainingArguments = $true)] $Arguments)
+
+                'hijacked'
+            }
+            Set-Alias -Name 'Convert-Image' -Value 'Invoke-PsicHijack' -Scope Global
+            try
+            {
+                $result = ConvertTo-Avif -LiteralPath $script:source
+            }
+            finally
+            {
+                Remove-Item -LiteralPath 'Alias:\Convert-Image', 'Function:\Invoke-PsicHijack' -Force
+            }
+
+            $result | Should -BeOfType [System.IO.FileInfo]
+            $result.Name | Should -Be 'IMG_0001.avif'
+        }
+    }
 }

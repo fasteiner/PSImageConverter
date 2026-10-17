@@ -89,4 +89,25 @@ Describe 'Write-ImageConverterError' {
 
         { Invoke-WriteError -Parameters @{ Exception = $exception; ErrorId = 'TargetExists'; Category = 'ResourceExists' } -ErrorAction Stop } | Should -Throw -ErrorId 'TargetExists,Test-ImageConverterCaller'
     }
+
+    It 'Should stop the calling cmdlet with -Terminating, also with -ErrorAction SilentlyContinue' {
+        $exception = [System.ArgumentException]::new('The destination is a file.')
+        $errorCount = $global:Error.Count
+        $caught = $null
+
+        try
+        {
+            $null = Invoke-WriteError -Parameters @{ Exception = $exception; ErrorId = 'DestinationNotDirectory'; Category = 'InvalidArgument'; TargetObject = 'C:\file.txt'; Terminating = $true }
+        }
+        catch
+        {
+            $caught = $_
+        }
+
+        $caught.FullyQualifiedErrorId | Should -Be 'DestinationNotDirectory,Test-ImageConverterCaller'
+        $caught.CategoryInfo.Category | Should -Be 'InvalidArgument'
+        $caught.TargetObject | Should -Be 'C:\file.txt'
+        $caught.Exception | Should -Be $exception
+        $global:Error.Count - $errorCount | Should -Be 1
+    }
 }

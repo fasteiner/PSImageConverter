@@ -146,6 +146,66 @@ Describe 'Get-ImageInfo' {
             $infoError | Should -BeNullOrEmpty
             @($result).Count | Should -Be 2
         }
+
+        It 'Should describe a file named by overlapping patterns once' {
+            $output = Get-ImageInfo -Path (Join-Path -Path $script:tempDir.FullName -ChildPath '*.heic'), (Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_*') -Verbose 4>&1
+
+            $result = @($output | Where-Object -FilterScript { $_.PSObject.TypeNames -contains 'PSImageConverter.ImageInfo' })
+            $result.Path | Sort-Object | Should -Be (@((Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0001.heic'), (Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG[2].heic')) | Sort-Object)
+            "$($output | Where-Object -FilterScript { $_ -is [System.Management.Automation.VerboseRecord] })" | Should -Match 'already given earlier'
+        }
+    }
+
+    Context 'When the objects are piped into the next cmdlet' {
+        BeforeEach {
+            Copy-Item -Path $script:fixture -Destination (Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0001.heic')
+            # Trip[1] as a wildcard pattern matches Trip1, which must not be converted in its place.
+            Copy-Item -Path $script:fixture -Destination (Join-Path -Path $script:tempDir.FullName -ChildPath 'Trip[1].heic')
+            $null = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'Trip1.heic') -Width 8 -Height 8
+        }
+
+        It 'Should carry the provider-qualified path in PSPath' {
+            $result = Get-ImageInfo -LiteralPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0001.heic')
+
+            $result.PSPath | Should -Be (Get-Item -LiteralPath $result.Path).PSPath
+        }
+
+        It 'Should convert the files that a filter on its output passes, also a name with [ ]' {
+            $result = Get-ImageInfo -Path (Join-Path -Path $script:tempDir.FullName -ChildPath '*.heic') | Where-Object -Property Width -GT 10 | ConvertTo-Jpeg -ErrorVariable conversionError
+
+            $conversionError | Should -BeNullOrEmpty
+            $result.Name | Sort-Object | Should -Be @('IMG_0001.jpg', 'Trip[1].jpg')
+            Join-Path -Path $script:tempDir.FullName -ChildPath 'Trip1.jpg' | Should -Not -Exist
+            (Get-ImageInfo -LiteralPath $result[0].FullName).Format | Should -Be 'Jpeg'
+        }
+
+        It 'Should bind to -LiteralPath of Get-ImageInfo itself' {
+            $result = Get-ImageInfo -LiteralPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'Trip[1].heic') | Get-ImageInfo -ErrorVariable infoError
+
+            $infoError | Should -BeNullOrEmpty
+            $result.Width | Should -Be 64
+        }
+
+        It 'Should not show PSPath in the default view of <View>' -ForEach @(
+            @{ View = 'Out-String' }
+            @{ View = 'Format-List' }
+            @{ View = 'Format-Table' }
+        ) {
+            $result = Get-ImageInfo -LiteralPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0001.heic')
+
+            $text = switch ($View)
+            {
+                'Out-String' { $result | Out-String -Width 400 }
+                'Format-List' { $result | Format-List | Out-String -Width 400 }
+                'Format-Table' { $result | Format-Table | Out-String -Width 400 }
+            }
+
+            $text | Should -Not -Match 'PSPath'
+            foreach ($property in 'Path', 'Format', 'Width', 'Height', 'Orientation', 'CameraMake', 'CameraModel', 'DateTaken', 'HasExif', 'FileSize')
+            {
+                $text | Should -Match "\b$property\b"
+            }
+        }
     }
 
     Context 'When an item fails' {
@@ -189,6 +249,130 @@ Describe 'Get-ImageInfo' {
 
         It 'Should stop at the first failure with -ErrorAction Stop' {
             { Get-ImageInfo -Path $script:textFile, $script:fixture -ErrorAction Stop } | Should -Throw -ErrorId 'ImageReadFailed,Get-ImageInfo'
+        }
+
+        It 'Should stop at the first failure with $ErrorActionPreference = ''Stop'' in the calling script' {
+            $script:described = $null
+
+            {
+                $ErrorActionPreference = 'Stop'
+                $script:described = Get-ImageInfo -Path $script:missing, $script:fixture
+            } | Should -Throw -ErrorId 'PathNotFound,Get-ImageInfo'
+
+            $script:described | Should -BeNullOrEmpty
+        }
+
+        It 'Should say that a wildcard pattern matches no file' {
+            $null = Get-ImageInfo -Path (Join-Path -Path $script:tempDir.FullName -ChildPath '*.nomatch') -ErrorAction SilentlyContinue -ErrorVariable infoError
+
+            "$($infoError[0])" | Should -BeLike 'No file matches the pattern *'
+        }
+
+        It 'Should write InvalidWildcardPattern for a -Path that is not a valid pattern, also when no file of that name exists' {
+            $null = Get-ImageInfo -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'zz[.heic') -ErrorAction SilentlyContinue -ErrorVariable infoError
+
+            $infoError | Should -HaveCount 1
+            $infoError[0].FullyQualifiedErrorId | Should -Be 'InvalidWildcardPattern,Get-ImageInfo'
+        }
+
+        It 'Should write one UnsupportedProvider error for a pattern that matches several items of another provider' {
+            $env:PSIC_INFO_A = 'a'
+            $env:PSIC_INFO_B = 'b'
+            try
+            {
+                $null = Get-ImageInfo -Path 'Env:\PSIC_INFO_*' -ErrorAction SilentlyContinue -ErrorVariable infoError
+            }
+            finally
+            {
+                Remove-Item -Path 'Env:\PSIC_INFO_A', 'Env:\PSIC_INFO_B'
+            }
+
+            $infoError | Should -HaveCount 1
+            $infoError[0].FullyQualifiedErrorId | Should -Be 'UnsupportedProvider,Get-ImageInfo'
+            $infoError[0].TargetObject | Should -Be 'Env:\PSIC_INFO_*'
+        }
+    }
+
+    Context 'When the image is damaged' {
+        It 'Should warn once and still describe a JPEG cut off at 60 %' {
+            $damaged = New-TestDamagedJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'cut.jpg') -Keep 0.6
+            $errorCount = $global:Error.Count
+
+            $result = Get-ImageInfo -LiteralPath $damaged.FullName -WarningAction SilentlyContinue -WarningVariable infoWarning -ErrorVariable infoError
+
+            $? | Should -BeTrue
+            $infoError | Should -BeNullOrEmpty
+            # The warning handler runs inside Magick.NET, where -ErrorVariable and $? would not see an error it raised.
+            $global:Error.Count - $errorCount | Should -Be 0
+            $result.Width | Should -Be 320
+            $infoWarning | Should -HaveCount 1
+            "$($infoWarning[0])" | Should -Be "The image may be damaged (Premature end of JPEG file; Corrupt JPEG data: premature end of data segment): $($damaged.FullName)"
+        }
+
+        It 'Should warn about an animated GIF cut off after its first frame and describe that frame' {
+            $damaged = New-TestFrameImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'cut.gif') -FrameCount 3 -Keep 0.8
+            $errorCount = $global:Error.Count
+
+            $result = Get-ImageInfo -LiteralPath $damaged.FullName -WarningAction SilentlyContinue -WarningVariable infoWarning -ErrorVariable infoError
+
+            $infoError | Should -BeNullOrEmpty
+            $global:Error.Count - $errorCount | Should -Be 0
+            $result.Width | Should -Be 16
+            $infoWarning | Should -HaveCount 1
+            "$($infoWarning[0])" | Should -BeLike "The image may be damaged (*): $($damaged.FullName)"
+        }
+
+        It 'Should not warn about the frames of an intact animated GIF' {
+            $frames = New-TestFrameImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'anim.gif') -FrameCount 3
+
+            $null = Get-ImageInfo -LiteralPath $frames.FullName -WarningVariable infoWarning
+
+            $infoWarning | Should -BeNullOrEmpty
+        }
+
+        It 'Should dispose the image when the damage warning stops the call' {
+            $outcome = InModuleScope -ModuleName $script:moduleName -Parameters @{ SourcePath = $script:fixture } {
+                $script:readImage = [ImageMagick.MagickImage]::new($SourcePath)
+                Mock -CommandName Read-ImageConverterImage -MockWith {
+                    [PSCustomObject] @{
+                        Result     = $script:readImage
+                        Exception  = $null
+                        Warnings   = @([ImageMagick.MagickCorruptImageWarningException]::new('Premature end of JPEG file'))
+                        FrameCount = 1
+                    }
+                }
+
+                $caught = $null
+                $result = $null
+                try
+                {
+                    $result = Get-ImageInfo -LiteralPath $SourcePath -WarningAction Stop
+                }
+                catch
+                {
+                    $caught = $_
+                }
+
+                [PSCustomObject] @{
+                    Caught = $caught
+                    Result = $result
+                    Image  = $script:readImage
+                }
+            }
+
+            $outcome.Caught.Exception | Should -BeOfType [System.Management.Automation.ActionPreferenceStopException]
+            $outcome.Result | Should -BeNullOrEmpty
+            { $null = $outcome.Image.ToByteArray([ImageMagick.MagickFormat]::Png) } | Should -Throw -ExpectedMessage '*disposed object*'
+        }
+
+        It 'Should not warn for intact images' {
+            $jpeg = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'photo.jpg') -Width 320 -Height 240 -Exif -ColorProfile
+            $heic = Join-Path -Path (Split-Path -Path $script:fixture -Parent) -ChildPath 'thumbnail.heic'
+
+            $result = Get-ImageInfo -LiteralPath $script:fixture, $heic, $jpeg.FullName -WarningVariable infoWarning
+
+            $result | Should -HaveCount 3
+            $infoWarning | Should -BeNullOrEmpty
         }
     }
 }

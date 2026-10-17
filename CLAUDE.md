@@ -33,8 +33,8 @@ Invoke-Pester -Path tests\Unit\Public\ConvertFrom-Heic.tests.ps1   # single file
     PSImageConverter.psd1
     PSImageConverter.psm1 ← empty stub; rebuilt by ModuleBuilder
   tests/
-    assets/      ← sample.heic fixture (see tests/assets/README.md)
-    Helpers/     ← New-TestImage.ps1: writes test images with EXIF/XMP/IPTC/ICC/CMYK/thumbnail data
+    assets/      ← sample.heic, thumbnail.heic, two-images.heic fixtures (see tests/assets/README.md)
+    Helpers/     ← New-TestImage.ps1: writes test images with EXIF/XMP/IPTC/ICC/CMYK/thumbnail data, several frames, transparency, damaged JPEGs
     Unit/Public/, Unit/Private/
     QA/          ← module-level quality tests (PSSA, help, changelog)
 ```
@@ -54,13 +54,18 @@ Code coverage: Sampler's Pester task imports the built module before `Invoke-Pes
 - Every function (public and private) needs `.SYNOPSIS`, `.DESCRIPTION` > 40 chars, an `.EXAMPLE` with its name, `.PARAMETER` descriptions > 25 chars, a passing PSScriptAnalyzer run and a `tests/Unit/…/<Name>.tests.ps1`.
 - Code coverage threshold is **85%** (`build.yaml`).
 - Update `CHANGELOG.md` under `## [Unreleased]` with every change.
+- Tests run on Pester 6: a `Mock` whose `-ParameterFilter` does not match does not fall back to the real command, so add a default mock (e.g. `Use-RealMethodInvoker` in `Convert-Image.tests.ps1`), and `$PSBoundParameters` is empty inside a mock body. Code that only runs in another runspace or process (`[powershell]::Create()`, `pwsh -NonInteractive`) is not measured by coverage.
+- Every public cmdlet calls `Import-ImageConverterCallerPreference -Cmdlet $PSCmdlet` first in its `begin` block (add a `begin` block if it has none). A script module function does not see preference variables its caller set in a local scope (PowerShell issue #4568), so without it a user's function called with `-WhatIf` would make the cmdlet really write.
+- Every format `ValidateSet` (`-Format`) lists exactly the formats of `Get-ImageConverterFormatInfo`; a test in its test file checks every function of the module.
 
 ### Errors and wrappers
 
-- Report every failure through `Write-ImageConverterError` (`$PSCmdlet.WriteError()` with a stable error id and the source path as target), so `$?` is `$false` and `-ErrorVariable` gets one record per failure.
+- Report every failure about a file through `Write-ImageConverterError` (`$PSCmdlet.WriteError()` with a stable error id and the source path as target, or the input as given when it does not resolve), so `$?` is `$false` and `-ErrorVariable` gets one record per failure.
+- A parameter value that makes every file fail (a bad `-DestinationPath`) is checked once in `begin` and reported with `Write-ImageConverterError -Terminating` (`$PSCmdlet.ThrowTerminatingError()`, target object the parameter value), so N files give one record and nothing is converted.
 - Call .NET methods that can throw through `Invoke-ImageConverterMethod`, which returns the exception instead of throwing it: an exception that reaches script code is recorded in `$Error` and `-ErrorVariable` again, even when a `catch` handles it.
 - Compare existing files by `Get-ImageConverterFileIdentity`, not by path strings; path strings (`Get-ImageConverterPathComparer`) are only for files that may not exist yet.
-- Wrappers (`ConvertTo-*`, `ConvertFrom-Heic`) build the steppable pipeline to `Convert-Image` in their own `begin` block (in a helper, `Convert-Image` would no longer find the private functions) and pass their parameters through `Get-ImageConverterForwardedParameter`, which drops `-ErrorVariable`, `-OutVariable`, `-PipelineVariable` and the like.
+- Wrappers (`ConvertTo-*`, `ConvertFrom-Heic`) build the steppable pipeline to `Convert-Image` in their own `begin` block (in a helper, `Convert-Image` would no longer find the private functions) and pass their parameters through `Get-ImageConverterForwardedParameter`, which drops `-ErrorVariable`, `-OutVariable`, `-PipelineVariable` and the like. They invoke the module's own `Convert-Image` through its `FunctionInfo` (`$ExecutionContext.InvokeCommand.GetCommand('Convert-Image', 'Function')`, `{ & $convertCommand @convertParameters }`): by name, a global alias `Convert-Image` would win.
+- Wrappers check their parameter errors themselves (`Assert-ImageConverterDestinationPath`) before they start the pipeline: a terminating error raised inside the steppable pipeline's `Begin` reaches the wrapper's `begin` block as an ordinary statement error, so the wrapper would run on into `process`, and passing the error on puts it into `-ErrorVariable` three times.
 
 ## CI / Release
 

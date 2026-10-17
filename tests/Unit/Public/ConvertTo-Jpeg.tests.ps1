@@ -286,4 +286,200 @@ Describe 'ConvertTo-Jpeg' {
             (Get-ImageInfo -LiteralPath $result.FullName).Format | Should -Be 'Jpeg'
         }
     }
+
+    Context 'When the source has transparent pixels' {
+        It 'Should flatten them onto white' {
+            $transparent = New-TestTransparentImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'logo.png')
+
+            $result = ConvertTo-Jpeg -LiteralPath $transparent.FullName -Quality 100
+
+            $output = [ImageMagick.MagickImage]::new($result.FullName)
+            try
+            {
+                $output.HasAlpha | Should -BeFalse
+                $transparentBlock = $output.GetPixels().GetPixel(8, 8).ToColor()
+                @($transparentBlock.R, $transparentBlock.G, $transparentBlock.B) | ForEach-Object -Process { $_ | Should -BeGreaterOrEqual 251 }
+                $halfBlock = $output.GetPixels().GetPixel(24, 8).ToColor()
+                [System.Math]::Abs([System.Int32] $halfBlock.G - 128) | Should -BeLessOrEqual 4
+            }
+            finally
+            {
+                $output.Dispose()
+            }
+        }
+
+        It 'Should flatten a CMYK source onto paper white and keep CMYK' {
+            $cmykSource = New-TestTransparentImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'cutout.tif') -Cmyk
+
+            $result = ConvertTo-Jpeg -LiteralPath $cmykSource.FullName -Quality 100
+
+            $output = [ImageMagick.MagickImage]::new($result.FullName)
+            try
+            {
+                $output.ColorSpace | Should -Be 'CMYK'
+                # Paper white is no ink at all: C, M, Y and K are 0 under the transparent block.
+                $stored = $output.GetPixels().GetValue(8, 8)
+                $stored[0..3] | ForEach-Object -Process { $_ | Should -BeLessOrEqual 3 }
+                $null = $output.TransformColorSpace([ImageMagick.ColorProfiles]::SRGB)
+                $shown = $output.GetPixels().GetPixel(8, 8).ToColor()
+                @($shown.R, $shown.G, $shown.B) | ForEach-Object -Process { $_ | Should -BeGreaterOrEqual 250 }
+            }
+            finally
+            {
+                $output.Dispose()
+            }
+        }
+    }
+
+    Context 'When a confirmation cannot be asked' {
+        It 'Should write ConfirmationFailed of Convert-Image once per file and convert nothing' {
+            $second = Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0002.HEIC'
+            Copy-Item -LiteralPath $script:fixture -Destination $second
+            # A runspace without a user interface, where a confirmation prompt fails.
+            $powerShell = [System.Management.Automation.PowerShell]::Create()
+            try
+            {
+                $script = "Import-Module -Name '$($script:manifestPath)'; & { `$ConfirmPreference = 'Low'; Get-ChildItem -LiteralPath '$($script:source)', '$second' | ConvertTo-Jpeg }"
+                $output = $powerShell.AddScript($script).Invoke()
+                $errors = @($powerShell.Streams.Error)
+            }
+            finally
+            {
+                $powerShell.Dispose()
+            }
+
+            $output | Should -BeNullOrEmpty
+            $errors | Should -HaveCount 2
+            $errors.FullyQualifiedErrorId | Sort-Object -Unique | Should -Be 'ConfirmationFailed,Convert-Image'
+            $errors.TargetObject | Should -Be @($script:source, $second)
+            Get-ChildItem -Path $script:tempDir.FullName -Filter '*.jpg' | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'When -DestinationPath cannot name a folder' {
+        BeforeEach {
+            foreach ($name in 'IMG_0002.HEIC', 'IMG_0003.HEIC')
+            {
+                Copy-Item -Path $script:fixture -Destination (Join-Path -Path $script:tempDir.FullName -ChildPath $name)
+            }
+            $script:file = Join-Path -Path $script:tempDir.FullName -ChildPath 'file.txt'
+            Set-Content -Path $script:file -Value 'x'
+        }
+
+        It 'Should stop the call for 3 sources with one terminating <ErrorId> error of ConvertTo-Jpeg for <Destination>, WhatIf <WhatIf>' -ForEach @(
+            @{ ErrorId = 'DestinationNotDirectory'; Destination = 'file'; WhatIf = $false }
+            @{ ErrorId = 'DestinationNotDirectory'; Destination = 'file'; WhatIf = $true }
+            @{ ErrorId = 'UnsupportedProvider'; Destination = 'Env:\Pictures'; WhatIf = $false }
+            @{ ErrorId = 'InvalidDestinationPath'; Destination = 'NoSuchProvider::C:\out'; WhatIf = $false }
+            @{ ErrorId = 'InvalidDestinationPath'; Destination = 'PsicNoSuchDrive:\out'; WhatIf = $false }
+            @{ ErrorId = 'InvalidDestinationPath'; Destination = 'nul-character'; WhatIf = $false }
+            @{ ErrorId = 'InvalidDestinationPath'; Destination = ' '; WhatIf = $true }
+        ) {
+            $destinationPath = switch ($Destination)
+            {
+                'file' { $script:file }
+                'nul-character' { Join-Path -Path $script:tempDir.FullName -ChildPath "a`0b" }
+                default { $Destination }
+            }
+            $errorCount = $global:Error.Count
+            $result = $null
+            $caught = $null
+
+            try
+            {
+                $result = Get-ChildItem -Path $script:tempDir.FullName -Filter '*.HEIC' | ConvertTo-Jpeg -DestinationPath $destinationPath -WhatIf:$WhatIf -ErrorAction SilentlyContinue -ErrorVariable conversionError
+            }
+            catch
+            {
+                $caught = $_
+            }
+
+            $caught.FullyQualifiedErrorId | Should -Be "$ErrorId,ConvertTo-Jpeg"
+            $caught.TargetObject | Should -Be $destinationPath
+            $global:Error.Count - $errorCount | Should -Be 1
+            $conversionError | Should -HaveCount 1
+            $result | Should -BeNullOrEmpty
+            Get-ChildItem -Path $script:tempDir.FullName -Recurse -Force | Where-Object -FilterScript { $_.Extension -ne '.HEIC' -and $_.Name -ne 'file.txt' } | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'When the caller sets preference variables in its own scope' {
+        BeforeAll {
+            function Invoke-UserFunction
+            {
+                [CmdletBinding(SupportsShouldProcess = $true)]
+                param ([System.Collections.Hashtable] $Parameters)
+
+                ConvertTo-Jpeg @Parameters
+            }
+        }
+
+        BeforeEach {
+            $script:missing = Join-Path -Path $script:tempDir.FullName -ChildPath 'missing.heic'
+            $script:target = Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0001.jpg'
+        }
+
+        It 'Should write nothing when a user function is called with -WhatIf' {
+            $result = Invoke-UserFunction -Parameters @{ LiteralPath = $script:source } -WhatIf
+
+            $result | Should -BeNullOrEmpty
+            $script:target | Should -Not -Exist
+        }
+
+        It 'Should not overwrite an existing file with -Force when a user function is called with -WhatIf' {
+            Set-Content -Path $script:target -Value 'existing'
+
+            $null = Invoke-UserFunction -Parameters @{ LiteralPath = $script:source; Force = $true } -WhatIf
+
+            Get-Content -Path $script:target | Should -Be 'existing'
+        }
+
+        It 'Should make the first failure terminating with $ErrorActionPreference = ''Stop'' in the calling script' {
+            {
+                $ErrorActionPreference = 'Stop'
+                ConvertTo-Jpeg -Path $script:missing, $script:source
+            } | Should -Throw -ErrorId 'PathNotFound,Convert-Image'
+
+            $script:target | Should -Not -Exist
+        }
+
+        It 'Should let an explicit -ErrorAction Continue win over the caller''s $ErrorActionPreference' {
+            $outcome = & {
+                $ErrorActionPreference = 'Stop'
+                $written = ConvertTo-Jpeg -Path $script:missing, $script:source -ErrorAction Continue -ErrorVariable conversionError 2>$null
+
+                [PSCustomObject] @{
+                    Written = $written
+                    Errors  = @($conversionError)
+                }
+            }
+
+            $outcome.Errors.FullyQualifiedErrorId | Should -Be 'PathNotFound,Convert-Image'
+            $outcome.Written.FullName | Should -Be $script:target
+        }
+    }
+
+    Context 'When the session has an alias named Convert-Image' {
+        It 'Should still call the module''s Convert-Image' {
+            # An alias wins over every function of the same name, in every scope.
+            function global:Invoke-PsicHijack
+            {
+                param ([Parameter(ValueFromRemainingArguments = $true)] $Arguments)
+
+                'hijacked'
+            }
+            Set-Alias -Name 'Convert-Image' -Value 'Invoke-PsicHijack' -Scope Global
+            try
+            {
+                $result = ConvertTo-Jpeg -LiteralPath $script:source
+            }
+            finally
+            {
+                Remove-Item -LiteralPath 'Alias:\Convert-Image', 'Function:\Invoke-PsicHijack' -Force
+            }
+
+            $result | Should -BeOfType [System.IO.FileInfo]
+            $result.Name | Should -Be 'IMG_0001.jpg'
+        }
+    }
 }

@@ -202,4 +202,55 @@ Describe 'ConvertTo-Png' {
             (Get-ImageInfo -LiteralPath $result.FullName).Format | Should -Be 'Png'
         }
     }
+
+    Context 'When the session has an alias named Convert-Image' {
+        It 'Should still call the module''s Convert-Image' {
+            # An alias wins over every function of the same name, in every scope.
+            function global:Invoke-PsicHijack
+            {
+                param ([Parameter(ValueFromRemainingArguments = $true)] $Arguments)
+
+                'hijacked'
+            }
+            Set-Alias -Name 'Convert-Image' -Value 'Invoke-PsicHijack' -Scope Global
+            try
+            {
+                $result = ConvertTo-Png -LiteralPath $script:source
+            }
+            finally
+            {
+                Remove-Item -LiteralPath 'Alias:\Convert-Image', 'Function:\Invoke-PsicHijack' -Force
+            }
+
+            $result | Should -BeOfType [System.IO.FileInfo]
+            $result.Name | Should -Be 'IMG_0001.png'
+        }
+    }
+
+    Context 'When a photo with an RGB profile has only grey pixels' {
+        It 'Should write a PNG whose Adobe RGB profile readers accept, StripMetadata <StripMetadata>' -ForEach @(
+            @{ StripMetadata = $false }
+            @{ StripMetadata = $true }
+        ) {
+            # A black-and-white photo tagged Adobe RGB; ImageMagick stores it as a one-channel JPEG with the profile.
+            $source = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'mono.jpg') -Color '#808080' -ColorProfile
+
+            $result = ConvertTo-Png -LiteralPath $source.FullName -StripMetadata:$StripMetadata
+
+            $readWarnings = [System.Collections.Generic.List[System.String]]::new()
+            $output = [ImageMagick.MagickImage]::new()
+            try
+            {
+                $output.add_Warning([System.EventHandler[ImageMagick.WarningEventArgs]] { $readWarnings.Add($args[1].Message) }.GetNewClosure())
+                $output.Read($result.FullName)
+
+                $output.GetColorProfile().Description | Should -Be 'Adobe RGB (1998)'
+                $readWarnings | Should -BeNullOrEmpty -Because 'libpng rejects an RGB profile in a greyscale PNG'
+            }
+            finally
+            {
+                $output.Dispose()
+            }
+        }
+    }
 }

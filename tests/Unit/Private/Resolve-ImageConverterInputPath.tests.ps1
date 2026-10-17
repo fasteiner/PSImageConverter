@@ -93,7 +93,53 @@ Describe 'Resolve-ImageConverterInputPath' {
         $result.Errors[0].FullyQualifiedErrorId | Should -BeLike 'PathNotFound*'
         $result.Errors[0].CategoryInfo.Category | Should -Be 'ObjectNotFound'
         $result.Errors[0].TargetObject | Should -Be $missing
+        "$($result.Errors[0])" | Should -Be "Cannot find path '$missing' because it does not exist."
         $result.Paths | Should -HaveCount 1
+    }
+
+    It 'Should say that a wildcard pattern matches no file, with the pattern as target' {
+        $pattern = Join-Path -Path $script:tempDir.FullName -ChildPath '*.nomatch'
+
+        $result = Invoke-Resolve -Parameters @{ Path = $pattern }
+
+        $result.Errors | Should -HaveCount 1
+        $result.Errors[0].FullyQualifiedErrorId | Should -BeLike 'PathNotFound*'
+        $result.Errors[0].Exception | Should -BeOfType [System.Management.Automation.ItemNotFoundException]
+        $result.Errors[0].TargetObject | Should -Be $pattern
+        "$($result.Errors[0])" | Should -BeLike "No file matches the pattern '$([System.Management.Automation.WildcardPattern]::Escape($pattern))'. *"
+    }
+
+    It 'Should keep the plain message for a -Path without wildcard characters' {
+        $missing = Join-Path -Path $script:tempDir.FullName -ChildPath 'missing.heic'
+
+        $result = Invoke-Resolve -Parameters @{ Path = $missing }
+
+        "$($result.Errors[0])" | Should -Be "Cannot find path '$missing' because it does not exist."
+    }
+
+    It 'Should name the hidden files that wildcards skip when only a hidden file matches' {
+        $name = 'secret.heic'
+        if (-not $IsWindows)
+        {
+            $name = '.secret.heic'
+        }
+        $hidden = Join-Path -Path $script:tempDir.FullName -ChildPath $name
+        Set-Content -LiteralPath $hidden -Value 'x'
+        if ($IsWindows)
+        {
+            [System.IO.File]::SetAttributes($hidden, [System.IO.FileAttributes]::Hidden)
+        }
+        $expected = 'hidden (dot) files'
+        if ($IsWindows)
+        {
+            $expected = 'hidden files'
+        }
+
+        $result = Invoke-Resolve -Parameters @{ Path = $hidden.Replace('secret', 'secr?t') }
+
+        $result.Paths | Should -BeNullOrEmpty
+        "$($result.Errors[0])" | Should -BeLike "*. Wildcards do not match $expected; -LiteralPath does."
+        (Invoke-Resolve -Parameters @{ LiteralPath = $hidden }).Paths | Should -Be $hidden
     }
 
     It 'Should write exactly one InvalidWildcardPattern error for a -Path that is not a valid pattern' {
@@ -107,6 +153,44 @@ Describe 'Resolve-ImageConverterInputPath' {
         $result.Errors[0].FullyQualifiedErrorId | Should -BeLike 'InvalidWildcardPattern*'
         $result.Errors[0].CategoryInfo.Category | Should -Be 'InvalidArgument'
         $result.Errors[0].Exception.InnerException | Should -BeOfType [System.Management.Automation.WildcardPatternException]
+    }
+
+    It 'Should write InvalidWildcardPattern also when no file has that literal name' {
+        $odd = Join-Path -Path $script:tempDir.FullName -ChildPath 'zz[.heic'
+        $errorCount = $global:Error.Count
+
+        $result = Invoke-Resolve -Parameters @{ Path = $odd }
+
+        $result.Errors | Should -HaveCount 1
+        $result.Errors[0].FullyQualifiedErrorId | Should -BeLike 'InvalidWildcardPattern*'
+        $result.Errors[0].TargetObject | Should -Be $odd
+        $result.Errors[0].Exception.InnerException | Should -BeOfType [System.Management.Automation.WildcardPatternException]
+        $global:Error.Count - $errorCount | Should -Be 1
+    }
+
+    It 'Should name the brackets as wildcard characters when a pattern with [ ] matches nothing' {
+        # c[1].heic exists, but as a pattern it stands for c1.heic.
+        $pattern = Join-Path -Path $script:tempDir.FullName -ChildPath 'c[1].heic'
+        $hiddenFiles = 'hidden (dot) files'
+        if ($IsWindows)
+        {
+            $hiddenFiles = 'hidden files'
+        }
+
+        $result = Invoke-Resolve -Parameters @{ Path = $pattern }
+
+        $result.Paths | Should -BeNullOrEmpty
+        $result.Errors | Should -HaveCount 1
+        $result.Errors[0].FullyQualifiedErrorId | Should -BeLike 'PathNotFound*'
+        "$($result.Errors[0])" | Should -Be "No file matches the pattern '$pattern'. [ and ] are wildcard characters, and wildcards do not match $hiddenFiles; -LiteralPath takes the name as written."
+    }
+
+    It 'Should not name the brackets when they are escaped' {
+        $pattern = Join-Path -Path $script:tempDir.FullName -ChildPath 'x`[1`]*.heic'
+
+        $result = Invoke-Resolve -Parameters @{ Path = $pattern }
+
+        "$($result.Errors[0])" | Should -BeLike '*. Wildcards do not match *'
     }
 
     It 'Should take such a name as written with -LiteralPath' {
@@ -174,5 +258,24 @@ Describe 'Resolve-ImageConverterInputPath' {
         $result.Errors | Should -HaveCount 1
         $result.Errors[0].FullyQualifiedErrorId | Should -BeLike 'UnsupportedProvider*'
         $result.Errors[0].TargetObject | Should -Be 'Env:\PATH'
+        "$($result.Errors[0])" | Should -Be "The path 'Env:\PATH' belongs to the Environment provider. Only file system paths are supported."
+    }
+
+    It 'Should write one UnsupportedProvider error for a pattern that matches several items of another provider' {
+        $env:PSIC_RESOLVE_A = 'a'
+        $env:PSIC_RESOLVE_B = 'b'
+        try
+        {
+            $result = Invoke-Resolve -Parameters @{ Path = 'Env:\PSIC_RESOLVE_*', (Join-Path -Path $script:tempDir.FullName -ChildPath 'a.heic') }
+        }
+        finally
+        {
+            Remove-Item -Path 'Env:\PSIC_RESOLVE_A', 'Env:\PSIC_RESOLVE_B'
+        }
+
+        $result.Errors | Should -HaveCount 1
+        $result.Errors[0].FullyQualifiedErrorId | Should -BeLike 'UnsupportedProvider*'
+        $result.Errors[0].TargetObject | Should -Be 'Env:\PSIC_RESOLVE_*'
+        $result.Paths | Should -Be (Join-Path -Path $script:tempDir.FullName -ChildPath 'a.heic')
     }
 }

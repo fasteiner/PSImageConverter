@@ -10,27 +10,34 @@ function Get-ImageConverterFormatInfo
         the EXIF profile for it and whether it stores CMYK pixels. Tiff, Bmp and Gif output
         loses the EXIF data, so the cmdlets warn about it. CMYK sources are converted to sRGB
         for the formats that cannot store CMYK, because their encoders would otherwise change
-        or invert the colours.
+        or invert the colours. Without -Format the objects of all output formats are returned,
+        so the tests can compare the -Format ValidateSets of the cmdlets with this table.
 
         .PARAMETER Format
-        The output format name as accepted by Convert-Image -Format, e.g. Jpeg or WebP.
+        The output format name as accepted by Convert-Image -Format, e.g. Jpeg or WebP; all
+        formats when it is left out.
 
         .EXAMPLE
         Get-ImageConverterFormatInfo -Format 'WebP'
 
         Returns Format WebP, Extension .webp, IsLossy $true, KeepsExif $true and SupportsCmyk $false.
+
+        .EXAMPLE
+        (Get-ImageConverterFormatInfo).Format
+
+        Returns the names of all output formats.
     #>
     [CmdletBinding()]
     [OutputType([System.Management.Automation.PSCustomObject])]
     param
     (
-        [Parameter(Mandatory = $true)]
+        [Parameter()]
         [ValidateSet('Jpeg', 'Png', 'WebP', 'Avif', 'Jxl', 'Tiff', 'Bmp', 'Gif')]
         [System.String]
         $Format
     )
 
-    $formats = @{
+    $formats = [ordered] @{
         Jpeg = @{ Extension = '.jpg'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $true }
         Png  = @{ Extension = '.png'; IsLossy = $false; KeepsExif = $true; SupportsCmyk = $false }
         WebP = @{ Extension = '.webp'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $false }
@@ -41,13 +48,22 @@ function Get-ImageConverterFormatInfo
         Gif  = @{ Extension = '.gif'; IsLossy = $false; KeepsExif = $false; SupportsCmyk = $false }
     }
 
-    $info = $formats[$Format]
+    $names = $formats.Keys
+    if ($PSBoundParameters.ContainsKey('Format'))
+    {
+        $names = @($Format)
+    }
 
-    [PSCustomObject] @{
-        Format       = $Format
-        Extension    = $info.Extension
-        IsLossy      = $info.IsLossy
-        KeepsExif    = $info.KeepsExif
-        SupportsCmyk = $info.SupportsCmyk
+    foreach ($name in $names)
+    {
+        $info = $formats[$name]
+
+        [PSCustomObject] @{
+            Format       = $name
+            Extension    = $info.Extension
+            IsLossy      = $info.IsLossy
+            KeepsExif    = $info.KeepsExif
+            SupportsCmyk = $info.SupportsCmyk
+        }
     }
 }

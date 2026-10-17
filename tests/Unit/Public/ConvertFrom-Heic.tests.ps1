@@ -213,7 +213,8 @@ Describe 'ConvertFrom-Heic' {
         It 'Should overwrite the file with -Force' {
             $result = ConvertFrom-Heic -Path $script:source -Force
 
-            $result.Length | Should -BeGreaterThan 8
+            $result.FullName | Should -Be (Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0001.jpg')
+            (Get-ImageInfo -LiteralPath $result.FullName).Format | Should -Be 'Jpeg'
         }
     }
 
@@ -372,6 +373,185 @@ Describe 'ConvertFrom-Heic' {
 
             $conversionWarning | Should -HaveCount 1
             "$($conversionWarning[0])" | Should -Match 'EXIF metadata'
+        }
+    }
+
+    Context 'When a confirmation cannot be asked' {
+        It 'Should write ConfirmationFailed of Convert-Image once per file and convert nothing' {
+            $second = Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0002.HEIC'
+            Copy-Item -LiteralPath $script:fixture -Destination $second
+            # A runspace without a user interface, where a confirmation prompt fails.
+            $powerShell = [System.Management.Automation.PowerShell]::Create()
+            try
+            {
+                $script = "Import-Module -Name '$($script:manifestPath)'; ConvertFrom-Heic -LiteralPath '$($script:source)', '$second' -Format Png -Confirm"
+                $output = $powerShell.AddScript($script).Invoke()
+                $errors = @($powerShell.Streams.Error)
+            }
+            finally
+            {
+                $powerShell.Dispose()
+            }
+
+            $output | Should -BeNullOrEmpty
+            $errors | Should -HaveCount 2
+            $errors.FullyQualifiedErrorId | Sort-Object -Unique | Should -Be 'ConfirmationFailed,Convert-Image'
+            $errors.TargetObject | Should -Be @($script:source, $second)
+            Get-ChildItem -Path $script:tempDir.FullName -Filter '*.png' | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'When an input path is not a file' {
+        It 'Should write InvalidWildcardPattern for a -Path that is not a valid pattern, also when no file of that name exists' {
+            $null = ConvertFrom-Heic -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'zz[.heic') -ErrorAction SilentlyContinue -ErrorVariable conversionError
+
+            $conversionError | Should -HaveCount 1
+            $conversionError[0].FullyQualifiedErrorId | Should -Be 'InvalidWildcardPattern,ConvertFrom-Heic'
+        }
+
+        It 'Should write one UnsupportedProvider error for a pattern that matches several items of another provider' {
+            $env:PSIC_HEIC_A = 'a'
+            $env:PSIC_HEIC_B = 'b'
+            try
+            {
+                $result = ConvertFrom-Heic -Path 'Env:\PSIC_HEIC_*', $script:source -ErrorAction SilentlyContinue -ErrorVariable conversionError
+            }
+            finally
+            {
+                Remove-Item -Path 'Env:\PSIC_HEIC_A', 'Env:\PSIC_HEIC_B'
+            }
+
+            $conversionError | Should -HaveCount 1
+            $conversionError[0].FullyQualifiedErrorId | Should -Be 'UnsupportedProvider,ConvertFrom-Heic'
+            $conversionError[0].TargetObject | Should -Be 'Env:\PSIC_HEIC_*'
+            $result.Name | Should -Be 'IMG_0001.jpg'
+        }
+    }
+
+    Context 'When -DestinationPath cannot name a folder' {
+        BeforeEach {
+            foreach ($name in 'IMG_0002.HEIC', 'IMG_0003.HEIC')
+            {
+                Copy-Item -Path $script:fixture -Destination (Join-Path -Path $script:tempDir.FullName -ChildPath $name)
+            }
+            $script:file = Join-Path -Path $script:tempDir.FullName -ChildPath 'file.txt'
+            Set-Content -Path $script:file -Value 'x'
+        }
+
+        It 'Should stop the call for 3 sources with one terminating <ErrorId> error of ConvertFrom-Heic for <Destination>, WhatIf <WhatIf>' -ForEach @(
+            @{ ErrorId = 'DestinationNotDirectory'; Destination = 'file'; WhatIf = $false }
+            @{ ErrorId = 'DestinationNotDirectory'; Destination = 'file'; WhatIf = $true }
+            @{ ErrorId = 'UnsupportedProvider'; Destination = 'Env:\Pictures'; WhatIf = $false }
+            @{ ErrorId = 'InvalidDestinationPath'; Destination = 'NoSuchProvider::C:\out'; WhatIf = $false }
+            @{ ErrorId = 'InvalidDestinationPath'; Destination = 'PsicNoSuchDrive:\out'; WhatIf = $false }
+            @{ ErrorId = 'InvalidDestinationPath'; Destination = 'nul-character'; WhatIf = $true }
+            @{ ErrorId = 'InvalidDestinationPath'; Destination = ' '; WhatIf = $false }
+        ) {
+            $destinationPath = switch ($Destination)
+            {
+                'file' { $script:file }
+                'nul-character' { Join-Path -Path $script:tempDir.FullName -ChildPath "a`0b" }
+                default { $Destination }
+            }
+            $errorCount = $global:Error.Count
+            $result = $null
+            $caught = $null
+
+            try
+            {
+                $result = Get-ChildItem -Path $script:tempDir.FullName -Filter '*.HEIC' | ConvertFrom-Heic -DestinationPath $destinationPath -WhatIf:$WhatIf -ErrorAction SilentlyContinue -ErrorVariable conversionError
+            }
+            catch
+            {
+                $caught = $_
+            }
+
+            $caught.FullyQualifiedErrorId | Should -Be "$ErrorId,ConvertFrom-Heic"
+            $caught.TargetObject | Should -Be $destinationPath
+            $global:Error.Count - $errorCount | Should -Be 1
+            $conversionError | Should -HaveCount 1
+            $result | Should -BeNullOrEmpty
+            Get-ChildItem -Path $script:tempDir.FullName -Recurse -Force | Where-Object -FilterScript { $_.Extension -ne '.HEIC' -and $_.Name -ne 'file.txt' } | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'When the caller sets preference variables in its own scope' {
+        BeforeAll {
+            function Invoke-UserFunction
+            {
+                [CmdletBinding(SupportsShouldProcess = $true)]
+                param ([System.Collections.Hashtable] $Parameters)
+
+                ConvertFrom-Heic @Parameters
+            }
+        }
+
+        BeforeEach {
+            $script:missing = Join-Path -Path $script:tempDir.FullName -ChildPath 'missing.heic'
+            $script:target = Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0001.jpg'
+        }
+
+        It 'Should write nothing when a user function is called with -WhatIf' {
+            $result = Invoke-UserFunction -Parameters @{ LiteralPath = $script:source } -WhatIf
+
+            $result | Should -BeNullOrEmpty
+            $script:target | Should -Not -Exist
+        }
+
+        It 'Should not overwrite an existing file with -Force when a user function is called with -WhatIf' {
+            Set-Content -Path $script:target -Value 'existing'
+
+            $null = Invoke-UserFunction -Parameters @{ LiteralPath = $script:source; Force = $true } -WhatIf
+
+            Get-Content -Path $script:target | Should -Be 'existing'
+        }
+
+        It 'Should make the first failure terminating with $ErrorActionPreference = ''Stop'' in the calling script' {
+            {
+                $ErrorActionPreference = 'Stop'
+                ConvertFrom-Heic -Path $script:missing, $script:source
+            } | Should -Throw -ErrorId 'PathNotFound,ConvertFrom-Heic'
+
+            $script:target | Should -Not -Exist
+        }
+
+        It 'Should let an explicit -ErrorAction Continue win over the caller''s $ErrorActionPreference' {
+            $outcome = & {
+                $ErrorActionPreference = 'Stop'
+                $written = ConvertFrom-Heic -Path $script:missing, $script:source -ErrorAction Continue -ErrorVariable conversionError 2>$null
+
+                [PSCustomObject] @{
+                    Written = $written
+                    Errors  = @($conversionError)
+                }
+            }
+
+            $outcome.Errors.FullyQualifiedErrorId | Should -Be 'PathNotFound,ConvertFrom-Heic'
+            $outcome.Written.FullName | Should -Be $script:target
+        }
+    }
+
+    Context 'When the session has an alias named Convert-Image' {
+        It 'Should still call the module''s Convert-Image' {
+            # An alias wins over every function of the same name, in every scope.
+            function global:Invoke-PsicHijack
+            {
+                param ([Parameter(ValueFromRemainingArguments = $true)] $Arguments)
+
+                'hijacked'
+            }
+            Set-Alias -Name 'Convert-Image' -Value 'Invoke-PsicHijack' -Scope Global
+            try
+            {
+                $result = ConvertFrom-Heic -LiteralPath $script:source
+            }
+            finally
+            {
+                Remove-Item -LiteralPath 'Alias:\Convert-Image', 'Function:\Invoke-PsicHijack' -Force
+            }
+
+            $result | Should -BeOfType [System.IO.FileInfo]
+            $result.Name | Should -Be 'IMG_0001.jpg'
         }
     }
 }
