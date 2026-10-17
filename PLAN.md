@@ -34,8 +34,15 @@ Done. Native loading uses the DllImport resolver on every platform now; `SetNati
 | ------------------ | --------- |
 | `Convert-Image`    | Any readable source → `-Format`. Same parameters as today's `ConvertFrom-Heic` (`-Path` pipeline, `-Format`, `-Quality`, `-DestinationPath`, `-StripMetadata`, `-Force`, `-WhatIf`). Throws if target path == source path. Logic moves here from `ConvertFrom-Heic`. |
 | `ConvertFrom-Heic` | Thin wrapper: validates `.heic/.heif/.hif`, then calls `Convert-Image`. Default format Jpeg. |
-| `ConvertTo-Heic`   | New — see step 3. |
+| `ConvertTo-Jpeg`, `ConvertTo-Png`, `ConvertTo-WebP`, `ConvertTo-Avif`, `ConvertTo-JpegXL` | Thin wrappers: any readable source → `Convert-Image -Format Jpeg/Png/WebP/Avif/Jxl`. Same parameters as `Convert-Image` minus `-Format`; `ConvertTo-Png` has no `-Quality` (lossless). |
+| `ConvertTo-Heic`   | New — see step 3. Same wrapper shape as the other `ConvertTo-*`. |
 | `Get-ImageInfo`    | Renamed from `Get-HeicInfo` (same output). |
+
+`ConvertTo-*` wrappers:
+
+- One per common target format only; Tiff, Bmp and Gif stay with `Convert-Image -Format`. No `ConvertFrom-*` besides `ConvertFrom-Heic`: Magick.NET detects the source format from the content, so `Convert-Image` / `ConvertTo-*` already read every source.
+- Pass the bound parameters through to `Convert-Image` (splatting), so pipeline input (`Get-ChildItem | ConvertTo-WebP`), `-WhatIf`/`-Confirm` and errors behave exactly like `Convert-Image`.
+- Each gets its own help (with an example per wrapper) and `tests/Unit/Public/ConvertTo-<Format>.tests.ps1`: output extension and re-read format, pipeline input, `-WhatIf`, `-Quality` where it applies, and that a source already in the target format (e.g. `ConvertTo-Jpeg` on a `.jpg` without `-DestinationPath`) fails with the same-path error instead of overwriting the source.
 
 Behaviour found by the interactive tests in step 1 (already present before it; fix while writing `Convert-Image` / `Get-ImageInfo`, each with a Pester test):
 
