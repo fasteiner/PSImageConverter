@@ -72,9 +72,18 @@ jobs:
           }
           if (Test-Path -Path build.log)
           {
-              $tail = (Get-Content -Path build.log -Tail 80) -join "`n"
-              $tail = $tail -replace '%', '%25' -replace "`r", '' -replace "`n", '%0A'
-              Write-Output "::error title=Build log tail::$tail"
+              $esc = [char] 27
+              $lines = Get-Content -Path build.log | ForEach-Object -Process { $_ -replace "$esc\[[0-9;]*m", '' }
+              $hits = for ($i = 0; $i -lt $lines.Count; $i++)
+              {
+                  if ($lines[$i] -match '\[-\]|Exception|Error:|Expected|failed|at <ScriptBlock>|, .*\.ps1:\d+')
+                  {
+                      $lines[$i]
+                  }
+              }
+              $text = ($hits | Select-Object -Unique | Select-Object -First 70) -join "`n"
+              $text = $text -replace '%', '%25' -replace "`r", '' -replace "`n", '%0A'
+              Write-Output "::error title=Pester errors::$text"
           }
 
       - name: Upload test results
