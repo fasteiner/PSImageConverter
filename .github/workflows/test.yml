@@ -41,8 +41,15 @@ jobs:
         with:
           versionSpec: "5.x"
 
-      - name: Build and test
-        shell: ${{ matrix.shell }}
+      - name: Build and test (PowerShell 7)
+        if: matrix.shell == 'pwsh'
+        shell: pwsh
+        run: |
+          ./build.ps1 -ResolveDependency -Tasks build, test
+
+      - name: Build and test (Windows PowerShell 5.1)
+        if: matrix.shell == 'powershell'
+        shell: powershell
         run: |
           ./build.ps1 -ResolveDependency -Tasks build, test
 
