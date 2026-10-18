@@ -13,6 +13,9 @@ BeforeAll {
     $script:fixture = (Resolve-Path -Path (Join-Path -Path $PSScriptRoot -ChildPath '../../assets/sample.heic')).ProviderPath
     . (Join-Path -Path $PSScriptRoot -ChildPath '../../Helpers/New-TestImage.ps1')
 
+    # Heic output needs the encoder of the operating system, which a machine may not have (the Windows CI runner).
+    $script:heicUnavailableReason = [PSImageConverter.HeicEncoder]::GetUnavailableReason()
+
     # Runs Convert-ImageConverterImage from an advanced script block, which provides the -Cmdlet it reports through.
     function Invoke-Conversion
     {
@@ -541,6 +544,12 @@ Describe 'Convert-ImageConverterImage' {
                 Before, Png output failed with 'Incorrect data in iCCP' and the other formats kept the two
                 bytes. The same JPEG with the profile cut to its declared size is the reference.
             #>
+            if ($Format -eq 'Heic' -and $null -ne $script:heicUnavailableReason)
+            {
+                Set-ItResult -Skipped -Because "this machine has no working HEIC encoder ($script:heicUnavailableReason)"
+                return
+            }
+
             $trailing = New-ProfileJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'trailing.jpg') -ColorProfile $script:adobeRgbWithTrailingBytes
             $cut = New-ProfileJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'cut.jpg') -ColorProfile $script:adobeRgb
             $trailingTarget = Join-Path -Path $script:tempDir.FullName -ChildPath "trailing-out.$Format"
