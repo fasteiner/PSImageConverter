@@ -1,3 +1,11 @@
+BeforeDiscovery {
+    # The output formats of the module's table, so a test case per format covers every format.
+    Import-Module -Name 'PSImageConverter'
+    $script:outputFormats = InModuleScope -ModuleName 'PSImageConverter' {
+        (Get-ImageConverterFormatInfo).Format
+    }
+}
+
 BeforeAll {
     $script:moduleName = 'PSImageConverter'
     Import-Module -Name $script:moduleName
@@ -85,6 +93,63 @@ BeforeAll {
             $type
             $position += 12 + $length
         }
+    }
+
+    # Returns the decoded pixels of an image file as R, G, B and A bytes, row by row.
+    function Get-PixelByte
+    {
+        param ([System.String] $Path)
+
+        $image = [ImageMagick.MagickImage]::new($Path)
+        try
+        {
+            , $image.GetPixels().ToByteArray(0, 0, $image.Width, $image.Height, 'RGBA')
+        }
+        finally
+        {
+            $image.Dispose()
+        }
+    }
+
+    # Returns the ICC profile bytes stored in the file: read from the file structure, for JPEG XL through Magick.NET.
+    function Get-StoredProfileByte
+    {
+        param ([System.String] $Path, [System.String] $Format)
+
+        $data = $null
+        if ($Format -ne 'Jxl')
+        {
+            $data = (Get-TestStoredColorLayout -Path $Path).ProfileData
+        }
+        else
+        {
+            $image = [ImageMagick.MagickImage]::new($Path)
+            try
+            {
+                $colorProfile = $image.GetColorProfile()
+                if ($null -ne $colorProfile)
+                {
+                    $data = $colorProfile.ToByteArray()
+                }
+            }
+            finally
+            {
+                $image.Dispose()
+            }
+        }
+
+        # One byte after the other, so Should compares them with the expected bytes.
+        $data
+    }
+
+    # Writes a JPEG with the Adobe RGB colour #6496C8 and inserts the ICC profile bytes as they are.
+    function New-ProfileJpeg
+    {
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Test fixture: writes a file into the temporary folder of a test.')]
+        param ([System.String] $Path, [System.Byte[]] $ColorProfile)
+
+        $jpeg = New-TestImage -Path $Path -Color '#6496C8'
+        Add-TestJpegColorProfile -Path $jpeg.FullName -ColorProfile $ColorProfile
     }
 }
 
@@ -417,6 +482,343 @@ Describe 'Convert-ImageConverterImage' {
 
             $result.Errors | Should -BeNullOrEmpty
             (Get-TestStoredColorLayout -Path $target).ProfileSpace | Should -Be 'RGB'
+        }
+    }
+
+    Context 'When the ICC profile of the source is followed by bytes after the size its header declares' {
+        BeforeAll {
+            # Adobe RGB (1998), 560 bytes, followed by two zero bytes as in Samsung Galaxy HEIC photos.
+            $script:adobeRgb = [ImageMagick.ColorProfiles]::AdobeRGB1998.ToByteArray()
+            $script:adobeRgbWithTrailingBytes = [System.Byte[]] ($script:adobeRgb + [System.Byte[]]::new(2))
+
+            <#
+                Profiles that lcms cannot apply and whose data is longer than the size their header
+                declares: the size field (bytes 0 to 3) ends inside the tag table, which ends at byte 252,
+                or the device class (bytes 12 to 15) is unknown or a device link.
+            #>
+            $declared200 = [System.Byte[]] $script:adobeRgb.Clone()
+            $declared200[2] = 0
+            $declared200[3] = 200
+            $declared128 = [System.Byte[]] $script:adobeRgbWithTrailingBytes.Clone()
+            $declared128[2] = 0
+            $declared128[3] = 128
+            $unknownClass = [System.Byte[]] $script:adobeRgbWithTrailingBytes.Clone()
+            [System.Text.Encoding]::ASCII.GetBytes('xxxx').CopyTo($unknownClass, 12)
+            $linkClass = [System.Byte[]] $script:adobeRgbWithTrailingBytes.Clone()
+            [System.Text.Encoding]::ASCII.GetBytes('link').CopyTo($linkClass, 12)
+
+            $script:unusableLongerProfiles = @{
+                declared200  = $declared200
+                declared128  = $declared128
+                unknownClass = $unknownClass
+                linkClass    = $linkClass
+            }
+        }
+
+        It 'Should start from a JPEG that stores the 562 bytes, which ImageMagick reads as they are' {
+            $source = New-ProfileJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'trailing.jpg') -ColorProfile $script:adobeRgbWithTrailingBytes
+
+            (Get-TestStoredColorLayout -Path $source.FullName).ProfileData.Length | Should -Be 562
+            $image = [ImageMagick.MagickImage]::new($source.FullName)
+            try
+            {
+                $image.GetColorProfile().ToByteArray().Length | Should -Be 562
+            }
+            finally
+            {
+                $image.Dispose()
+            }
+        }
+
+        It 'Should write <Format> output at quality <Quality> without the bytes after the declared size and with the pixels of the cut profile' -ForEach @(
+            foreach ($format in $script:outputFormats)
+            {
+                @{ Format = $format; Quality = 90 }
+            }
+            @{ Format = 'Jxl'; Quality = 100 }
+        ) {
+            <#
+                Before, Png output failed with 'Incorrect data in iCCP' and the other formats kept the two
+                bytes. The same JPEG with the profile cut to its declared size is the reference.
+            #>
+            $trailing = New-ProfileJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'trailing.jpg') -ColorProfile $script:adobeRgbWithTrailingBytes
+            $cut = New-ProfileJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'cut.jpg') -ColorProfile $script:adobeRgb
+            $trailingTarget = Join-Path -Path $script:tempDir.FullName -ChildPath "trailing-out.$Format"
+            $cutTarget = Join-Path -Path $script:tempDir.FullName -ChildPath "cut-out.$Format"
+
+            $trailingResult = Invoke-ProfileConversion -SourcePath $trailing.FullName -TargetPath $trailingTarget -Format $Format -Quality $Quality
+            $cutResult = Invoke-ProfileConversion -SourcePath $cut.FullName -TargetPath $cutTarget -Format $Format -Quality $Quality
+
+            $trailingResult.Errors | Should -BeNullOrEmpty
+            $cutResult.Errors | Should -BeNullOrEmpty
+            $trailingResult.Verbose | Should -BeLike "*The ICC colour profile is followed by 2 bytes that are not part of it (its header declares 560 bytes), so they are left out of the $Format output: $($trailing.FullName)*"
+            $cutResult.Verbose | Should -Not -BeLike '*not part of it*'
+            if ($Format -eq 'Jxl' -and $Quality -lt 100)
+            {
+                # Lossy Jxl stores no ICC profile; the pixels are converted to sRGB through the cut profile.
+                $trailingResult.Verbose | Should -BeLike '*Converted the colours to sRGB*'
+            }
+            else
+            {
+                Get-StoredProfileByte -Path $trailingTarget -Format $Format | Should -Be $script:adobeRgb
+                Get-StoredProfileByte -Path $cutTarget -Format $Format | Should -Be $script:adobeRgb
+            }
+
+            [System.Linq.Enumerable]::SequenceEqual((Get-PixelByte -Path $trailingTarget), (Get-PixelByte -Path $cutTarget)) | Should -BeTrue -Because 'the bytes after the declared size are not part of the profile'
+        }
+
+        It 'Should keep the icc:* properties of the profile in Png output, as for the cut profile' {
+            $trailing = New-ProfileJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'trailing.jpg') -ColorProfile $script:adobeRgbWithTrailingBytes
+            $cut = New-ProfileJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'cut.jpg') -ColorProfile $script:adobeRgb
+            $trailingTarget = Join-Path -Path $script:tempDir.FullName -ChildPath 'trailing-out.png'
+            $cutTarget = Join-Path -Path $script:tempDir.FullName -ChildPath 'cut-out.png'
+
+            $null = Invoke-Conversion -Parameters @{ SourcePath = $trailing.FullName; TargetPath = $trailingTarget; Format = 'Png' }
+            $null = Invoke-Conversion -Parameters @{ SourcePath = $cut.FullName; TargetPath = $cutTarget; Format = 'Png' }
+
+            # It is the same profile, so the properties read with it still describe it.
+            $chunks = Get-PngChunkName -Path $trailingTarget
+            $chunks | Should -Contain 'tEXt:icc:description'
+            $chunks | Should -Be (Get-PngChunkName -Path $cutTarget)
+        }
+
+        It 'Should write Png output with the cut profile, StripMetadata <StripMetadata>' -ForEach @(
+            @{ StripMetadata = $false }
+            @{ StripMetadata = $true }
+        ) {
+            $trailing = New-ProfileJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'trailing.jpg') -ColorProfile $script:adobeRgbWithTrailingBytes
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.png'
+
+            $result = Invoke-Conversion -Parameters @{ SourcePath = $trailing.FullName; TargetPath = $target; Format = 'Png'; StripMetadata = $StripMetadata }
+
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Output.FullName | Should -Be $target
+            (Get-TestStoredColorLayout -Path $target).ProfileData | Should -Be $script:adobeRgb
+        }
+
+        It 'Should cut a grey profile on grey pixels and keep the pixels' {
+            $image = [ImageMagick.MagickImage]::new([ImageMagick.MagickColor]::new('#808080'), 16, 16)
+            try
+            {
+                $image.ColorSpace = [ImageMagick.ColorSpace]::Gray
+                $source = Join-Path -Path $script:tempDir.FullName -ChildPath 'grey.jpg'
+                $image.Write($source, [ImageMagick.MagickFormat]::Jpeg)
+            }
+            finally
+            {
+                $image.Dispose()
+            }
+
+            $grayProfile = (Get-TestGrayColorProfile).ToByteArray()
+            $null = Add-TestJpegColorProfile -Path $source -ColorProfile ([System.Byte[]] ($grayProfile + [System.Byte[]]::new(4)))
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.png'
+
+            $result = Invoke-ProfileConversion -SourcePath $source -TargetPath $target -Format 'Png'
+
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Verbose | Should -BeLike "*followed by 4 bytes that are not part of it (its header declares $($grayProfile.Length) bytes)*"
+            $layout = Get-TestStoredColorLayout -Path $target
+            $layout.Channels | Should -Be 'Grey'
+            $layout.ProfileData | Should -Be $grayProfile
+            $result.Color | Should -Be (Get-PixelByte -Path $source)[0..2]
+        }
+
+        It 'Should cut the CMYK profile of a CMYK source that stays CMYK in Tiff output and keep the pixels' {
+            # The SWOP profile does not fit into one APP2 segment, so ImageMagick writes it into a TIFF with the two bytes.
+            $print = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'print.jpg') -Cmyk
+            $image = [ImageMagick.MagickImage]::new($print.FullName)
+            try
+            {
+                $swop = $image.GetColorProfile().ToByteArray()
+                $image.RemoveProfile('icc')
+                $image.SetProfile([ImageMagick.ColorProfile]::new([System.Byte[]] ($swop + [System.Byte[]]::new(2))))
+                $source = Join-Path -Path $script:tempDir.FullName -ChildPath 'trailing-print.tif'
+                $image.Write($source, [ImageMagick.MagickFormat]::Tiff)
+                $sourcePixels = $image.GetPixels().ToByteArray(0, 0, $image.Width, $image.Height, 'CMYK')
+            }
+            finally
+            {
+                $image.Dispose()
+            }
+
+            (Get-TestStoredColorLayout -Path $source).ProfileData.Length | Should -Be ($swop.Length + 2)
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.tif'
+
+            $result = Invoke-ProfileConversion -SourcePath $source -TargetPath $target -Format 'Tiff'
+
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Verbose | Should -BeLike "*followed by 2 bytes that are not part of it (its header declares $($swop.Length) bytes)*"
+            $layout = Get-TestStoredColorLayout -Path $target
+            $layout.Channels | Should -Be 'CMYK'
+            [System.Linq.Enumerable]::SequenceEqual([System.Byte[]] $layout.ProfileData, $swop) | Should -BeTrue
+            $output = [ImageMagick.MagickImage]::new($target)
+            try
+            {
+                [System.Linq.Enumerable]::SequenceEqual($output.GetPixels().ToByteArray(0, 0, $output.Width, $output.Height, 'CMYK'), $sourcePixels) | Should -BeTrue
+            }
+            finally
+            {
+                $output.Dispose()
+            }
+        }
+
+        It 'Should leave a profile that is shorter than its header declares to the lcms check' {
+            # Cut short inside the tag data: lcms cannot apply it, so it is left out as before.
+            $source = New-ProfileJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'short.jpg') -ColorProfile ([System.Byte[]] $script:adobeRgb[0..299])
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.png'
+
+            $result = Invoke-ProfileConversion -SourcePath $source.FullName -TargetPath $target -Format 'Png'
+
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Verbose | Should -Not -BeLike '*not part of it*'
+            $result.Verbose | Should -BeLike '*The ICC colour profile cannot be applied (*), so it is left out of the Png output*'
+        }
+
+        It 'Should leave a profile that lcms cannot apply out of <Format> output and write the file: <Case>' -ForEach @(
+            foreach ($format in @('Png', 'Jpeg'))
+            {
+                @{ Format = $format; Case = 'header size 200 on the complete profile'; ProfileName = 'declared200' }
+                @{ Format = $format; Case = 'header size 128 and 2 more bytes'; ProfileName = 'declared128' }
+                @{ Format = $format; Case = "device class 'xxxx' and 2 more bytes"; ProfileName = 'unknownClass' }
+                @{ Format = $format; Case = "device class 'link' and 2 more bytes"; ProfileName = 'linkClass' }
+            }
+        ) {
+            <#
+                SetProfile, which the cut needs, throws for a profile that lcms cannot open, and a size that
+                ends inside the tag table would make the cut profile one. The profile is checked with lcms
+                as it was read, before anything is cut.
+            #>
+            $source = New-ProfileJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'unusable.jpg') -ColorProfile $script:unusableLongerProfiles[$ProfileName]
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath "out.$Format"
+
+            $result = Invoke-ProfileConversion -SourcePath $source.FullName -TargetPath $target -Format $Format
+
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Verbose | Should -Not -BeLike '*not part of it*'
+            [System.Text.RegularExpressions.Regex]::Matches($result.Verbose, 'The ICC colour profile cannot be applied').Count | Should -Be 1
+            $result.Verbose | Should -BeLike "*The ICC colour profile cannot be applied (*), so it is left out of the $Format output: $($source.FullName)*"
+            (Get-TestStoredColorLayout -Path $target).ProfileData | Should -BeNullOrEmpty
+            if ($Format -eq 'Png')
+            {
+                Get-PngChunkName -Path $target | Where-Object -FilterScript { $_ -like '*:icc:*' } | Should -BeNullOrEmpty
+            }
+
+            # Viewers ignore such a profile in the source, so they show the stored values.
+            $sourceColor = (Get-PixelByte -Path $source.FullName)[0..2]
+            foreach ($channel in 0..2)
+            {
+                [System.Math]::Abs($result.Color[$channel] - $sourceColor[$channel]) | Should -BeLessOrEqual 6
+            }
+        }
+
+        It 'Should leave the profile out of Png output when setting the cut profile fails' {
+            <#
+                lcms reads the cut profile as it read the profile before, so SetProfile is not expected to
+                fail; if it does, the source profile has been removed already and the image has none.
+            #>
+            InModuleScope -ModuleName $script:moduleName {
+                $null = Invoke-ImageConverterMethod -Type ([System.Object])
+            }
+
+            # Pester does not fall back to the real command when no -ParameterFilter matches, so this default mock calls the compiled helper.
+            Mock -ModuleName $script:moduleName -CommandName Invoke-ImageConverterMethod -MockWith {
+                $target = $null
+                $methodType = $Type
+                if ($null -ne $InputObject)
+                {
+                    $target = $InputObject
+                    $methodType = $InputObject.GetType()
+                }
+
+                $result = $null
+                $values = $null
+                $exception = [PSImageConverter.SafeInvoker]::Invoke($methodType, $target, $Name, $ArgumentList, [ref] $result, [ref] $values)
+                [PSCustomObject] @{ Result = $result; Exception = $exception; Arguments = $values }
+            }
+
+            Mock -ModuleName $script:moduleName -CommandName Invoke-ImageConverterMethod -ParameterFilter { $Name -eq 'SetProfile' } -MockWith {
+                [PSCustomObject] @{ Result = $null; Exception = [System.InvalidOperationException]::new('the profile cannot be opened'); Arguments = $ArgumentList }
+            }
+
+            $source = New-ProfileJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'trailing.jpg') -ColorProfile $script:adobeRgbWithTrailingBytes
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.png'
+
+            $result = Invoke-ProfileConversion -SourcePath $source.FullName -TargetPath $target -Format 'Png'
+
+            Should -Invoke -ModuleName $script:moduleName -CommandName Invoke-ImageConverterMethod -ParameterFilter { $Name -eq 'SetProfile' } -Times 1 -Exactly
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Verbose | Should -Not -BeLike '*not part of it*'
+            $result.Verbose | Should -BeLike "*The ICC colour profile cannot be applied (the profile cannot be opened), so it is left out of the Png output: $($source.FullName)*"
+            (Get-TestStoredColorLayout -Path $target).ProfileData | Should -BeNullOrEmpty
+            Get-PngChunkName -Path $target | Where-Object -FilterScript { $_ -like '*:icc:*' } | Should -BeNullOrEmpty
+            $result.Color | Should -Be (Get-PixelByte -Path $source.FullName)[0..2]
+        }
+    }
+
+    Context 'When the encoder cannot write an ICC profile that lcms can apply' {
+        BeforeAll {
+            $adobeRgb = [ImageMagick.ColorProfiles]::AdobeRGB1998.ToByteArray()
+
+            # Version 4.2 in the header (bytes 8 and 9) and two more bytes, declared (562): libpng wants the length of a version 4 profile to be a multiple of 4.
+            $version4 = [System.Byte[]] ($adobeRgb + [System.Byte[]]::new(2))
+            $version4[3] = 0x32
+            $version4[8] = 4
+            $version4[9] = 0x20
+
+            # The header declares 564 bytes, 4 more than there are; lcms reads the 560 bytes there are.
+            $declaredLonger = [System.Byte[]] $adobeRgb.Clone()
+            $declaredLonger[3] = 0x34
+
+            # Rendering intent 4 (bytes 64 to 67); the ICC specification defines 0 to 3.
+            $intent = [System.Byte[]] $adobeRgb.Clone()
+            $intent[67] = 4
+
+            $script:unwritableProfiles = @{
+                version4       = $version4
+                declaredLonger = $declaredLonger
+                intent         = $intent
+            }
+        }
+
+        It 'Should leave the <Case> out of <Format> output, whose encoder cannot write it, and write the pixels unchanged' -ForEach @(
+            @{ Format = 'Png'; Quality = 90; Case = 'version 4 profile whose length is not a multiple of 4'; ProfileName = 'version4'; Message = 'ICC profile length invalid (not a multiple of 4)*' }
+            @{ Format = 'Png'; Quality = 90; Case = 'profile whose header declares more bytes than there are'; ProfileName = 'declaredLonger'; Message = 'Incorrect data in iCCP*' }
+            @{ Format = 'Jxl'; Quality = 100; Case = 'profile with rendering intent 4'; ProfileName = 'intent'; Message = 'UnableToWriteImageData*' }
+        ) {
+            $source = New-ProfileJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'source.jpg') -ColorProfile $script:unwritableProfiles[$ProfileName]
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath "out.$Format"
+
+            $result = Invoke-ProfileConversion -SourcePath $source.FullName -TargetPath $target -Format $Format -Quality $Quality
+
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Verbose | Should -BeLike "*The $Format encoder cannot write the ICC colour profile ($Message), so it is left out of the $Format output: $($source.FullName)*"
+            Get-StoredProfileByte -Path $target -Format $Format | Should -Not -Be $script:unwritableProfiles[$ProfileName]
+            if ($Format -eq 'Png')
+            {
+                (Get-TestStoredColorLayout -Path $target).ProfileData | Should -BeNullOrEmpty
+                # The properties read with the profile would still name it.
+                Get-PngChunkName -Path $target | Where-Object -FilterScript { $_ -like '*:icc:*' } | Should -BeNullOrEmpty
+            }
+
+            # Png and lossless Jxl store the values of the source, which viewers then show as sRGB.
+            $result.Color | Should -Be (Get-PixelByte -Path $source.FullName)[0..2]
+        }
+
+        It 'Should keep the <Case> in <Format> output, whose encoder writes it' -ForEach @(
+            @{ Format = 'Jpeg'; Quality = 90; Case = 'version 4 profile whose length is not a multiple of 4'; ProfileName = 'version4' }
+            @{ Format = 'Jxl'; Quality = 100; Case = 'version 4 profile whose length is not a multiple of 4'; ProfileName = 'version4' }
+            @{ Format = 'Jpeg'; Quality = 90; Case = 'profile whose header declares more bytes than there are'; ProfileName = 'declaredLonger' }
+            @{ Format = 'Png'; Quality = 90; Case = 'profile with rendering intent 4'; ProfileName = 'intent' }
+            @{ Format = 'Jpeg'; Quality = 90; Case = 'profile with rendering intent 4'; ProfileName = 'intent' }
+        ) {
+            $source = New-ProfileJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'source.jpg') -ColorProfile $script:unwritableProfiles[$ProfileName]
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath "out.$Format"
+
+            $result = Invoke-ProfileConversion -SourcePath $source.FullName -TargetPath $target -Format $Format -Quality $Quality
+
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Verbose | Should -Not -BeLike '*ICC colour profile*'
+            Get-StoredProfileByte -Path $target -Format $Format | Should -Be $script:unwritableProfiles[$ProfileName]
         }
     }
 

@@ -255,6 +255,41 @@ Describe 'ConvertTo-Png' {
         }
     }
 
+    Context 'When the ICC profile of a photo is followed by bytes after its declared size' {
+        It 'Should write a PNG with the profile up to its declared size, which readers accept, StripMetadata <StripMetadata>' -ForEach @(
+            @{ StripMetadata = $false }
+            @{ StripMetadata = $true }
+        ) {
+            # Two zero bytes after the profile, as in Samsung Galaxy HEIC photos and the JPEGs converted from them; libpng refused it.
+            $adobeRgb = [ImageMagick.ColorProfiles]::AdobeRGB1998.ToByteArray()
+            $source = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'photo.jpg') -Color '#6496C8'
+            $null = Add-TestJpegColorProfile -Path $source.FullName -ColorProfile ([System.Byte[]] ($adobeRgb + [System.Byte[]]::new(2)))
+
+            $output = ConvertTo-Png -LiteralPath $source.FullName -StripMetadata:$StripMetadata -ErrorVariable conversionErrors -Verbose 4>&1
+
+            $conversionErrors | Should -BeNullOrEmpty
+            $result = $output | Where-Object -FilterScript { $_ -is [System.IO.FileInfo] }
+            $result.FullName | Should -Be (Join-Path -Path $script:tempDir.FullName -ChildPath 'photo.png')
+            "$($output | Where-Object -FilterScript { $_ -is [System.Management.Automation.VerboseRecord] })" | Should -BeLike "*The ICC colour profile is followed by 2 bytes that are not part of it (its header declares 560 bytes), so they are left out of the Png output: $($source.FullName)*"
+            (Get-TestStoredColorLayout -Path $result.FullName).ProfileData | Should -Be $adobeRgb
+
+            $readWarnings = [System.Collections.Generic.List[System.String]]::new()
+            $image = [ImageMagick.MagickImage]::new()
+            try
+            {
+                $image.add_Warning([System.EventHandler[ImageMagick.WarningEventArgs]] { $readWarnings.Add($args[1].Message) }.GetNewClosure())
+                $image.Read($result.FullName)
+
+                $image.GetColorProfile().Description | Should -Be 'Adobe RGB (1998)'
+                $readWarnings | Should -BeNullOrEmpty -Because 'libpng checks the iCCP chunk when it reads it'
+            }
+            finally
+            {
+                $image.Dispose()
+            }
+        }
+    }
+
     Context 'When a path uses a PSDrive that the caller created in its own scope' {
         BeforeEach {
             # The module resolves paths in its own session state, which sees only the global drives.
