@@ -1,0 +1,69 @@
+name: Problem with the module
+description: Report a bug or suggest an enhancement for PSImageConverter.
+labels: []
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Your feedback and support is greatly appreciated, thanks for contributing!
+
+        Please provide information regarding your issue under each section below.
+        **Write N/A in sections that do not apply.**
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem description
+      description: Details of the scenario you tried and the problem that is occurring, or the enhancement you are suggesting.
+    validations:
+      required: true
+  - type: textarea
+    id: reproducible
+    attributes:
+      label: How to reproduce
+      description: Provide the steps to reproduce the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expectedBehavior
+    attributes:
+      label: Expected behavior
+      description: Describe what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: currentBehavior
+    attributes:
+      label: Current behavior
+      description: Describe what actually happens.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Verbose logs
+      description: Verbose logs showing the problem. **Obfuscate any sensitive information.**
+      placeholder: Paste verbose logs here
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        PowerShell version (`$PSVersionTable`) and OS.
+      placeholder: Add environment information here
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: moduleVersion
+    attributes:
+      label: Module version used
+      description: |
+        Output of: `Get-Module -Name 'PSImageConverter' -ListAvailable | ft Name,Version,Path`
+      placeholder: Add module version here
+      render: text
+    validations:
+      required: true
