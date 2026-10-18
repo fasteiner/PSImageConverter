@@ -2,20 +2,21 @@ function Convert-Image
 {
     <#
         .SYNOPSIS
-        Converts images to JPEG, PNG, WebP, AVIF, JPEG XL, TIFF, BMP or GIF.
+        Converts images to JPEG, PNG, WebP, AVIF, HEIC, JPEG XL, TIFF, BMP or GIF.
 
         .DESCRIPTION
         Converts one or more image files into the format given in -Format using the bundled
         Magick.NET library. Every format Magick.NET can read is accepted as source (HEIC/HEIF,
         JPEG, PNG, WebP, AVIF, TIFF, ...); the source format is detected from the file content.
-        Works on Windows, Linux and macOS without installing any codecs. The EXIF orientation
-        is applied to the pixels so the result is always upright. Returns a FileInfo object
-        for every written file, the same object Get-Item returns, so it can be piped into the
-        next cmdlet also when its name contains wildcard characters.
+        Works on Windows, Linux and macOS without installing any codecs, except for HEIC
+        output, which is written with the HEVC encoder of the operating system (see NOTES).
+        The EXIF orientation is applied to the pixels so the result is always upright. Returns
+        a FileInfo object for every written file, the same object Get-Item returns, so it can
+        be piped into the next cmdlet also when its name contains wildcard characters.
 
         The output file gets the source file's base name and the extension of the format
-        (.jpg, .png, .webp, .avif, .jxl, .tif, .bmp, .gif) and is written next to the source
-        or into -DestinationPath. The image is written to a temporary file in the target
+        (.jpg, .png, .webp, .avif, .heic, .jxl, .tif, .bmp, .gif) and is written next to the
+        source or into -DestinationPath. The image is written to a temporary file in the target
         folder first and then moved over the target, so a failed or stopped (Ctrl+C)
         conversion never leaves a truncated file or the temporary file behind.
 
@@ -46,16 +47,19 @@ function Convert-Image
         try/catch catches it without -ErrorAction Stop; $Error[0] holds the error record, while
         -ErrorVariable holds the exception, whose ErrorRecord property has the record. The ids
         are InvalidDestinationPath (white space only, an unknown drive or provider, a
-        drive-qualified path that climbs above the root of its drive such as Temp:\..\x,
-        invalid characters, on Windows also a colon after the drive such as C:\x:y, a PSDrive
-        that is not global, see NOTES), UnsupportedProvider (not a file system path) and
+        drive-qualified path that climbs above the root of its drive such as Temp:\..\x, invalid
+        characters, on Windows also a colon after the drive such as C:\x:y, a PSDrive that is
+        not global, see NOTES), UnsupportedProvider (not a file system path) and
         DestinationNotDirectory (the path or one of its parent folders is an existing file, a
         junction or symbolic link whose target does not exist, or a link that cannot be
-        resolved, such as one that points to itself); the target object is the -DestinationPath value as given. A relative path that
-        climbs above the root of its drive stays at the root, as in other PowerShell cmdlets. A
-        folder that does not exist yet is created when the first file is written; when that
-        fails (no permission, a read-only file system), or the folder cannot be written to,
-        each file gets an ImageWriteFailed error.
+        resolved, such as one that points to itself); the target object is the -DestinationPath
+        value as given. -Format Heic on a computer without a working HEVC encoder stops the call
+        the same way with HeicEncoderNotAvailable (category NotInstalled, target object the
+        -Format value); the message says what to install. A relative path that climbs above the
+        root of its drive stays at the root, as in other PowerShell cmdlets. A folder that does
+        not exist yet is created when the first file is written; when that fails (no permission,
+        a read-only file system), or the folder cannot be written to, each file gets an
+        ImageWriteFailed error.
 
         .PARAMETER Path
         One or more image files to convert. Wildcards are supported (e.g. *.heic). Accepts
@@ -67,10 +71,11 @@ function Convert-Image
         through the PSPath property. Aliases: PSPath, LP.
 
         .PARAMETER Format
-        The output format: Jpeg, Png, WebP, Avif, Jxl (JPEG XL), Tiff, Bmp or Gif.
+        The output format: Jpeg, Png, WebP, Avif, Heic, Jxl (JPEG XL), Tiff, Bmp or Gif. Heic
+        needs the HEVC encoder of the operating system (see NOTES).
 
         .PARAMETER Quality
-        The quality from 1 to 100 used for the lossy formats Jpeg, WebP, Avif and Jxl.
+        The quality from 1 to 100 used for the lossy formats Jpeg, WebP, Avif, Heic and Jxl.
         Default 90. Ignored for the other formats.
 
         .PARAMETER DestinationPath
@@ -86,8 +91,8 @@ function Convert-Image
         output. The ICC colour profile is kept, so photos that carry one (as iPhone photos do,
         e.g. Display P3) keep their colours; lossy Jxl output stores no ICC profile and gets
         sRGB pixels instead, and a grey image with a grey profile gets sRGB pixels in WebP,
-        Avif, Bmp and Gif output, with the sRGB profile except in Gif. A profile that cannot
-        be applied or written, or does not match the pixels, can be left out (see NOTES).
+        Avif, Heic, Bmp and Gif output, with the sRGB profile except in Gif. A profile that
+        cannot be applied or written, or does not match the pixels, can be left out (see NOTES).
 
         .PARAMETER Force
         Overwrites output files that existed before the call, also read-only or hidden ones.
@@ -140,6 +145,10 @@ function Convert-Image
 
         - Jpeg, Png: EXIF, XMP, IPTC, ICC colour profile and comments.
         - WebP, Avif: EXIF, XMP and ICC colour profile; no IPTC, no comments.
+        - Heic: EXIF, XMP and ICC colour profile on Windows and Linux; on macOS no EXIF and no
+          XMP (ImageIO takes no EXIF block), so a warning is written there as for Tiff, and the
+          ICC colour profile is kept, except sRGB, which ImageIO stores as nclx colour
+          information. No IPTC, no comments.
         - Jxl: EXIF and XMP; the ICC colour profile only at -Quality 100 (lossless); no IPTC,
           no comments.
         - Tiff: XMP, IPTC, ICC colour profile and comments; no EXIF.
@@ -179,28 +188,29 @@ function Convert-Image
         complete, or, for Jxl, a rendering intent above 3) is left out of that output only,
         so the file is still written; -Verbose says so.
 
-        Grey images with a grey ICC profile (e.g. Photoshop's 'Dot Gain 20%' or 'Gray Gamma
-        1.8', scanned greyscale) keep their grey pixels and the profile in Jpeg, Png, Tiff and
-        lossless Jxl output. WebP, Avif, Bmp and Gif store grey pixels as RGB, for which a grey
-        profile is not valid (browsers would show the WebP and Gif with wrong grey levels,
-        Chrome and Edge would not display the Avif, Firefox would show the Bmp black), so the
-        pixels are converted to sRGB first, with and without -StripMetadata; -Verbose reports
-        it. This includes a grey JPEG XL with a grey profile (e.g. lossless Jxl output of such
-        an image), which ImageMagick reads as RGB.
+        Grey images with a grey ICC profile (e.g. Photoshop's 'Dot Gain 20%' or
+        'Gray Gamma 1.8', scanned greyscale) keep their grey pixels and the profile in Jpeg,
+        Png, Tiff and lossless Jxl output. WebP, Avif, Heic, Bmp and Gif store grey pixels as
+        RGB, for which a grey profile is not valid (browsers would show the WebP and Gif with
+        wrong grey levels, Chrome and Edge would not display the Avif, Firefox would show the
+        Bmp black), so the pixels are converted to sRGB first, with and without -StripMetadata;
+        -Verbose reports it. This includes a grey JPEG XL with a grey profile (e.g. lossless Jxl
+        output of such an image), which ImageMagick reads as RGB.
 
-        A profile made for other pixels is not valid: viewers ignore a grey profile in a
-        colour image, and browsers (Chrome, Edge, Firefox) apply an RGB profile to the pixels
-        of a grey JPEG, while Windows (Photos, Explorer) rejects it and shows the grey levels
-        unmanaged. Such a profile is kept, except where the output could not be written or
-        would look different with it: it is left out of lossless Jxl output and, as a grey
-        profile on colour pixels, out of Avif and Bmp output, and out of Jpeg, Png and Tiff
-        output when the colour pixels are all neutral grey (these formats store them as grey,
-        for which the grey profile would apply). Images whose pixels are all neutral grey but
-        that carry an RGB profile (e.g. a black-and-white photo exported in Adobe RGB) are
-        stored as RGB in Jpeg, Png and Tiff output, so the profile stays valid.
+        A profile made for other pixels is not valid: viewers ignore a grey profile in a colour
+        image, and browsers (Chrome, Edge, Firefox) apply an RGB profile to the pixels of a grey
+        JPEG, while Windows (Photos, Explorer) rejects it and shows the grey levels unmanaged.
+        Such a profile is kept, except where the output could not be written or would look
+        different with it: it is left out of lossless Jxl output and, as a grey profile on
+        colour pixels, out of Avif, Heic and Bmp output, and out of Jpeg, Png and Tiff output
+        when the colour pixels are all neutral grey (these formats store them as grey, for which
+        the grey profile would apply). Images whose pixels are all neutral grey but that carry
+        an RGB profile (e.g. a black-and-white photo exported in Adobe RGB) are stored as RGB in
+        Jpeg, Png and Tiff output, so the profile stays valid.
 
-        Tiff, Gif and Bmp output cannot carry EXIF data (date taken, camera, GPS location), so
-        a warning is written for every source file with EXIF data unless -StripMetadata is used.
+        Tiff, Gif and Bmp output (and Heic output on macOS) cannot carry EXIF data (date taken,
+        camera, GPS location), so a warning is written for every source file with EXIF data
+        unless -StripMetadata is used.
         After the orientation is applied, an EXIF thumbnail is removed (it would show rotated)
         and the XMP orientation and pixel dimensions are updated.
 
@@ -208,8 +218,9 @@ function Convert-Image
         output; for the other formats they are converted to sRGB through their CMYK profile.
 
         Jpeg has no transparency: transparent and half-transparent pixels are placed on a white
-        background (paper white for a CMYK image). The other formats keep the alpha channel
-        (Gif has only fully transparent and opaque pixels).
+        background (paper white for a CMYK image). So has Heic output on Windows, whose encoder
+        takes opaque pixels only. The other formats keep the alpha channel (Gif has only fully
+        transparent and opaque pixels).
 
         Only the first frame of an animated GIF or WebP, a multi-page TIFF or a HEIC file with
         several images is converted; a warning 'Only the first of <N> frames is converted:
@@ -253,7 +264,27 @@ function Convert-Image
         system path, and so does a relative -DestinationPath; strings and the output of
         Resolve-Path (which has no PSPath) do not.
 
-        Writing HEIC is not supported: the bundled Magick.NET build has no HEVC encoder.
+        HEIC output: the bundled Magick.NET build has no HEVC encoder, and the module ships none
+        (HEVC is covered by patent pools; shipping an encoder would pass their licensing duties
+        on to every user). -Format Heic uses the encoder of the operating system: on Windows the
+        HEIF encoder of WIC with the 'HEVC Video Extensions' from the Microsoft Store
+        (Windows 10 1809 or later); on Linux the libheif of the distribution with its HEVC
+        encoder x265, built in or as a plugin (e.g. sudo apt install libheif1
+        libheif-plugin-x265 on Ubuntu 24.04; about_PSImageConverter lists other distributions);
+        on macOS ImageIO (every macOS that runs PowerShell 7.4, on a Mac with an HEVC encoder).
+        Whether it works is checked once per process with a small test image; when it does not,
+        the call stops with HeicEncoderNotAvailable before any file is read, and an encoder
+        installed afterwards needs a new PowerShell session. -Format Avif stores the image in
+        the same HEIF container with the royalty-free AV1 codec and needs nothing installed. The
+        pixels are passed to the encoder as 8-bit RGB (RGBA where alpha is kept) after the
+        orientation is applied, with EXIF orientation 1; EXIF and XMP are stored as they are. An
+        image the encoder rejects (on Windows a side longer than 22528 pixels; on Linux a side
+        longer than 32768 pixels, one shorter than 32 pixels while the other is longer than
+        4096, or an image whose slices stay larger than Magick.NET reads even in 13 slices)
+        fails that file with ImageWriteFailed; which sizes ImageIO rejects on macOS is not
+        checked yet. Windows' own viewer (Photos, Explorer) does not show a HEIC image with a
+        side shorter than 8 pixels, whichever program wrote it, and ignores the alpha channel of
+        HEIC files; see Get-Help ConvertTo-Heic -Full for the Linux files it does not open.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '', Justification = 'ShouldProcess is called through Invoke-ImageConverterMethod, which returns the exception of a confirmation the host cannot ask instead of throwing it.')]
     [CmdletBinding(DefaultParameterSetName = 'Path', SupportsShouldProcess = $true)]
@@ -271,7 +302,7 @@ function Convert-Image
         $LiteralPath,
 
         [Parameter(Mandatory = $true)]
-        [ValidateSet('Jpeg', 'Png', 'WebP', 'Avif', 'Jxl', 'Tiff', 'Bmp', 'Gif')]
+        [ValidateSet('Jpeg', 'Png', 'WebP', 'Avif', 'Heic', 'Jxl', 'Tiff', 'Bmp', 'Gif')]
         [System.String]
         $Format,
 
@@ -307,8 +338,9 @@ function Convert-Image
             Write-Verbose -Message "-Quality is ignored for $Format output, which is not a lossy format."
         }
 
-        # A destination that cannot name a folder would fail every file; it stops the call before any file is read.
+        # A destination that cannot name a folder, or a missing HEIC encoder, would fail every file; it stops the call before any file is read.
         $destinationFolder = Assert-ImageConverterDestinationPath -Cmdlet $PSCmdlet -DestinationPath $DestinationPath
+        Assert-ImageConverterHeicEncoder -Cmdlet $PSCmdlet -Format $Format
 
         <#
             Target path -> source path of every target this call writes, or would write with -WhatIf,

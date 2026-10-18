@@ -1,20 +1,22 @@
-function Initialize-ImageConverterMagickNet
+function Initialize-ImageConverterAssembly
 {
     <#
         .SYNOPSIS
-        Loads the bundled Magick.NET once per process when the module is imported.
+        Loads the helper assembly and the bundled Magick.NET once per process when the module is imported.
 
         .DESCRIPTION
-        Runs Import-ImageConverterMagickNet under a process-wide lock, so the Magick.NET
-        assemblies are loaded and the native resolver is registered exactly once, even
-        when several runspaces import the module at the same time. Does nothing when
-        Magick.NET is already initialized or loaded in the process.
+        Loads the compiled helper assembly (Import-ImageConverterHelper) and then Magick.NET
+        (Import-ImageConverterMagickNet) under a process-wide lock, so the assemblies are loaded and
+        the native resolver is registered exactly once, even when several runspaces import the module
+        at the same time. Magick.NET is skipped when it is already initialized or loaded in the process.
 
         .PARAMETER LibraryPath
-        The folder that contains the Magick.NET assemblies and the runtimes folder.
+        The folder that contains the helper assembly, the Magick.NET assemblies and the runtimes folder.
 
         .EXAMPLE
-        Initialize-ImageConverterMagickNet -LibraryPath (Join-Path -Path $PSScriptRoot -ChildPath 'lib')
+        Initialize-ImageConverterAssembly -LibraryPath (Join-Path -Path $PSScriptRoot -ChildPath 'lib')
+
+        Loads the assemblies from the lib folder of the module.
     #>
     [CmdletBinding()]
     [OutputType([System.Void])]
@@ -39,7 +41,10 @@ function Initialize-ImageConverterMagickNet
     {
         [System.Threading.Monitor]::Enter($lockObject, [ref] $lockTaken)
 
-        if (('PSImageConverter.NativeResolver' -as [System.Type]) -and [PSImageConverter.NativeResolver]::IsRegistered)
+        # The resolver for Magick.Native is part of the helper assembly, so it is loaded first.
+        Import-ImageConverterHelper -LibraryPath $LibraryPath
+
+        if ([PSImageConverter.NativeResolver]::IsRegistered)
         {
             Write-Verbose -Message 'Magick.NET is already initialized in this process.'
             return

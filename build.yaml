@@ -48,6 +48,7 @@ BuildWorkflow:
   build:
     - Clean
     - Get_MagickNet
+    - Build_Helper
     - Build_Module_ModuleBuilder
     - Build_NestedModules_ModuleBuilder
     - Create_changelog_release_output
@@ -55,6 +56,7 @@ BuildWorkflow:
   minibuild:
     - Clean
     - Get_MagickNet
+    - Build_Helper
     - Build_Module_ModuleBuilder
     - Build_NestedModules_ModuleBuilder
 

@@ -6,10 +6,12 @@ function Import-ImageConverterMagickNet
 
         .DESCRIPTION
         Loads Magick.NET.Core and Magick.NET-Q8-AnyCPU from the given lib folder and
-        registers a DllImport resolver, so the Magick.Native library for the current
-        platform is loaded from the runtimes folder. Throws when the lib folder has no
-        native library for the current platform. Calling it again is harmless: the
-        assemblies are already loaded and the resolver is only registered once.
+        registers a DllImport resolver (PSImageConverter.NativeResolver of the helper
+        assembly, which Import-ImageConverterHelper loads first), so the Magick.Native
+        library for the current platform is loaded from the runtimes folder. Throws when
+        the lib folder has no native library for the current platform. Calling it again
+        is harmless: the assemblies are already loaded and the resolver is only
+        registered once.
 
         .PARAMETER LibraryPath
         The folder that contains the Magick.NET assemblies and the runtimes folder.
@@ -37,5 +39,5 @@ function Import-ImageConverterMagickNet
     Add-Type -LiteralPath (Join-Path -Path $LibraryPath -ChildPath 'Magick.NET.Core.dll')
     Add-Type -LiteralPath (Join-Path -Path $LibraryPath -ChildPath 'Magick.NET-Q8-AnyCPU.dll')
 
-    Register-ImageConverterNativeResolver -Assembly ([ImageMagick.MagickImage].Assembly) -NativePath $nativePath
+    [PSImageConverter.NativeResolver]::Register([ImageMagick.MagickImage].Assembly, $nativePath)
 }

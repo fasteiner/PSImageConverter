@@ -14,6 +14,10 @@
 		"ghcr.io/devcontainers/features/github-cli:1": {}
 	},
 	"postCreateCommand": "pwsh -f .devcontainer/setup.ps1",
+	// setup.ps1 installs libheif with x265; as in CI, a HEIC encoder that does not work then fails the tests instead of skipping them.
+	"remoteEnv": {
+		"PSIC_EXPECT_HEIC_ENCODER": "1"
+	},
 	// Configure tool-specific properties.
 	"customizations": {
 		// Configure properties specific to VS Code.

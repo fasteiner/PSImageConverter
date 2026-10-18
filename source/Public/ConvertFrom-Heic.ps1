@@ -2,7 +2,7 @@ function ConvertFrom-Heic
 {
     <#
         .SYNOPSIS
-        Converts HEIC/HEIF images to JPEG, PNG, WebP, AVIF, JPEG XL, TIFF, BMP or GIF.
+        Converts HEIC/HEIF images to JPEG, PNG, WebP, AVIF, HEIC, JPEG XL, TIFF, BMP or GIF.
 
         .DESCRIPTION
         Converts one or more HEIC/HEIF image files (e.g. iPhone photos) into another image
@@ -19,7 +19,8 @@ function ConvertFrom-Heic
         InvalidWildcardPattern, UnsupportedProvider and NotHeicFile for the input paths, and a
         -DestinationPath that cannot name a folder (InvalidDestinationPath, UnsupportedProvider,
         DestinationNotDirectory), which stops the whole call with one terminating error before
-        any file is read. Returns a FileInfo object for every written file.
+        any file is read, and so does -Format Heic on a computer without a working HEVC encoder
+        (HeicEncoderNotAvailable). Returns a FileInfo object for every written file.
 
         .PARAMETER Path
         One or more HEIC/HEIF files to convert. Wildcards are supported (e.g. *.heic).
@@ -31,10 +32,12 @@ function ConvertFrom-Heic
         PSPath property. Aliases: PSPath, LP.
 
         .PARAMETER Format
-        The output format: Jpeg (default), Png, WebP, Avif, Jxl (JPEG XL), Tiff, Bmp or Gif.
+        The output format: Jpeg (default), Png, WebP, Avif, Heic, Jxl (JPEG XL), Tiff, Bmp or
+        Gif. Heic re-encodes with the HEVC encoder of the operating system (see Get-Help
+        ConvertTo-Heic), e.g. at a lower -Quality into another -DestinationPath.
 
         .PARAMETER Quality
-        The quality from 1 to 100 used for the lossy formats Jpeg, WebP, Avif and Jxl.
+        The quality from 1 to 100 used for the lossy formats Jpeg, WebP, Avif, Heic and Jxl.
         Default 90. Ignored for the other formats.
 
         .PARAMETER DestinationPath
@@ -49,7 +52,8 @@ function ConvertFrom-Heic
         Removes EXIF (including the GPS location), XMP and IPTC metadata and comments from the
         output. The ICC colour profile is kept, so photos that carry one (as iPhone photos do)
         keep their colours; lossy Jxl output, and grey images with a grey profile in WebP,
-        Avif, Bmp and Gif output, get sRGB pixels instead (see Get-Help Convert-Image -Full).
+        Avif, Heic, Bmp and Gif output, get sRGB pixels instead (see Get-Help Convert-Image
+        -Full).
 
         .PARAMETER Force
         Overwrites output files that existed before the call, also read-only or hidden ones.
@@ -107,7 +111,7 @@ function ConvertFrom-Heic
         $LiteralPath,
 
         [Parameter()]
-        [ValidateSet('Jpeg', 'Png', 'WebP', 'Avif', 'Jxl', 'Tiff', 'Bmp', 'Gif')]
+        [ValidateSet('Jpeg', 'Png', 'WebP', 'Avif', 'Heic', 'Jxl', 'Tiff', 'Bmp', 'Gif')]
         [System.String]
         $Format = 'Jpeg',
 
@@ -134,11 +138,13 @@ function ConvertFrom-Heic
         Import-ImageConverterCallerPreference -Cmdlet $PSCmdlet
 
         <#
-            Convert-Image checks -DestinationPath as well, but its terminating error would reach this
-            begin block as an ordinary statement error: this command would go on into its process
-            block, and passing the error on would put it into -ErrorVariable three times.
+            Convert-Image checks -DestinationPath and the HEIC encoder as well, but its terminating
+            error would reach this begin block as an ordinary statement error: this command would go
+            on into its process block, and passing the error on would put it into -ErrorVariable
+            three times.
         #>
         $destinationFolder = Assert-ImageConverterDestinationPath -Cmdlet $PSCmdlet -DestinationPath $DestinationPath
+        Assert-ImageConverterHeicEncoder -Cmdlet $PSCmdlet -Format (Get-ImageConverterFormatInfo -Format $Format).Format
 
         <#
             One Convert-Image runs for the whole call, so its duplicate-target check covers every file,
