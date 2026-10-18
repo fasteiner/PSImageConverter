@@ -41,7 +41,7 @@ function ConvertTo-JpegXL
         Removes EXIF (including the GPS location) and XMP metadata from the output. Photos that
         carry an ICC colour profile keep their colours: at -Quality 100 with the profile, below
         that as sRGB pixels (see Get-Help Convert-Image -Full for sources without one and for
-        profiles that cannot be applied or do not match the pixels).
+        profiles that cannot be applied or written, or do not match the pixels).
 
         .PARAMETER Force
         Overwrites output files that existed before the call, also read-only or hidden ones.

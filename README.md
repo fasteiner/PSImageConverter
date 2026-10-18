@@ -9,11 +9,13 @@ Cross-platform PowerShell 7 module for converting images — HEIC/HEIF photos fr
 
 ## Installation
 
+PSImageConverter is published on the [PowerShell Gallery](https://www.powershellgallery.com/packages/PSImageConverter/):
+
 ```powershell
 Install-Module -Name PSImageConverter -Scope CurrentUser
 ```
 
-Pre-releases are published from the `dev` branch (e.g. `0.2.0-preview0007`):
+Pre-releases are published from the `dev` branch (e.g. `0.2.0-preview0013`). There is no stable release yet, so for now install a pre-release:
 
 ```powershell
 Install-Module -Name PSImageConverter -Scope CurrentUser -AllowPrerelease
@@ -88,7 +90,8 @@ The source format is detected from the file content; every format Magick.NET can
 - `-StripMetadata` removes EXIF (including the GPS location), XMP, IPTC and comments but keeps the ICC colour profile.
 - The colours are kept when the source carries an ICC profile, as iPhone photos do (e.g. Display P3). A HEIC or AVIF source that signals its colours only through nclx/CICP (no ICC profile) with primaries other than sRGB/BT.709 (e.g. Display P3 or BT.2020, also HDR with PQ or HLG) is converted without colour conversion, so its colours look less saturated; AVIF output keeps the CICP values.
 - Lossy JPEG XL (`-Quality` below 100, the default is 90) is always sRGB: the bundled encoder stores an ICC colour profile only in lossless files. The pixels of a source with an ICC profile (e.g. Display P3 or Adobe RGB) are converted to sRGB first, with and without `-StripMetadata`, so the photo looks the same; colours outside sRGB are clipped. Use `-Quality 100` or AVIF to keep a wide gamut. A grey profile in a colour image, which viewers ignore, is ignored here as well. Chrome shows a lossless JPEG XL whose profile describes its tone curve as a table (e.g. Photoshop's "Dot Gain 20%" grey profiles) without colour management; Firefox applies such a profile, and profiles with gamma or parametric curves (Adobe RGB, Display P3) work in both.
-- An ICC profile that the colour engine cannot apply, because it is damaged (e.g. cut short) or names an unknown colour space, is left out of every output (`-Verbose` says so): viewers ignore it in the source, PNG and lossless JPEG XL output could not be written with it, and Chrome and Edge would not display an AVIF that carries it.
+- Bytes after the size the header of an ICC profile declares are not part of the profile (Samsung Galaxy HEIC photos, for example, have two zero bytes there, and so do JPEGs converted from them). The profile is written without them in every output format, with unchanged colours (`-Verbose` says so). The PNG encoder refuses a profile with such bytes.
+- An ICC profile that the colour engine cannot apply, because it is damaged (e.g. cut short inside its tag data) or names an unknown colour space, is left out of every output (`-Verbose` says so): viewers ignore it in the source, PNG and lossless JPEG XL output could not be written with it, and Chrome and Edge would not display an AVIF that carries it. A profile that the colour engine can apply but the PNG or lossless JPEG XL encoder cannot write (e.g. a version 4 profile whose length is not a multiple of 4, a header that declares a few more bytes than the profile has although all its tags are complete, or, for JPEG XL, a rendering intent above 3) is left out of that output only, so the file is still written (`-Verbose` says so).
 - Grey images with a grey ICC profile (e.g. Photoshop's "Dot Gain 20%" or "Gray Gamma 1.8", scanned greyscale) keep their grey pixels and the profile in JPEG, PNG, TIFF and lossless JPEG XL. WebP, AVIF, HEIC, BMP and GIF store grey pixels as RGB, for which a grey profile is not valid (browsers would show the WebP and GIF with wrong grey levels, Chrome and Edge would not display the AVIF, Firefox would show the BMP black), so the pixels are converted to sRGB first, with and without `-StripMetadata`. This includes a grey JPEG XL with a grey profile (e.g. lossless JPEG XL output of such an image), which ImageMagick reads as RGB.
 - A profile made for other pixels is not valid. Viewers ignore a grey profile in a colour image; browsers (Chrome, Edge, Firefox) apply an RGB profile to the pixels of a grey JPEG, while Windows (Photos, Explorer) rejects it and shows the grey levels unmanaged. Such a profile is kept, except where the file could not be written or would look different with it: it is left out of lossless JPEG XL and, as a grey profile on colour pixels, out of AVIF, HEIC and BMP, and out of JPEG, PNG and TIFF when the colour pixels are all neutral grey (these formats store them as grey, for which the grey profile would apply). Lossy JPEG XL writes the pixels unchanged.
 - Images whose pixels are all neutral grey but that carry an RGB profile (e.g. a black-and-white photo exported in Adobe RGB) are stored as RGB in JPEG, PNG and TIFF output, so the profile stays valid; ImageMagick alone would store them as grey with the RGB profile.
@@ -186,7 +189,7 @@ One call never overwrites a file it wrote itself, and without `-Force` it never 
 
 ## Development
 
-The module is built with [Sampler](https://github.com/gaelcolas/Sampler). See [CLAUDE.md](CLAUDE.md) for the build commands and conventions.
+The module is built with [Sampler](https://github.com/gaelcolas/Sampler). Development happens on the [`dev`](https://github.com/fasteiner/PSImageConverter/tree/dev) branch, from which every pre-release is built; `main` gets the code with each stable release. See [CLAUDE.md](https://github.com/fasteiner/PSImageConverter/blob/dev/CLAUDE.md) for the build commands and conventions.
 
 ```powershell
 .\build.ps1 -ResolveDependency -Tasks build, test

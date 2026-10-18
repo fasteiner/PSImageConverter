@@ -1856,6 +1856,32 @@ Describe 'Convert-Image' {
 
             "$verbose" | Should -Not -Match 'sRGB'
         }
+
+        It 'Should write <Format> output of a photo whose ICC profile is followed by bytes after its declared size, StripMetadata <StripMetadata>' -ForEach @(
+            foreach ($format in @('Jpeg', 'Png', 'WebP', 'Avif', 'Tiff', 'Bmp', 'Gif'))
+            {
+                foreach ($strip in @($false, $true))
+                {
+                    @{ Format = $format; StripMetadata = $strip }
+                }
+            }
+        ) {
+            # Two zero bytes after the profile, as in Samsung Galaxy HEIC photos. Before, Png output failed with 'Incorrect data in iCCP'.
+            $photo = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'photo.jpg') -Color '#6496C8' -Exif
+            $null = Add-TestJpegColorProfile -Path $photo.FullName -ColorProfile ([System.Byte[]] ($script:adobeRgb + [System.Byte[]]::new(2)))
+            $photoColor = Get-ViewerColor -Path $photo.FullName
+
+            $result = Convert-Image -LiteralPath $photo.FullName -Format $Format -StripMetadata:$StripMetadata -DestinationPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out') -ErrorVariable conversionErrors -WarningAction SilentlyContinue
+
+            $conversionErrors | Should -BeNullOrEmpty
+            $result | Should -BeOfType [System.IO.FileInfo]
+            (Get-TestStoredColorLayout -Path $result.FullName).ProfileData | Should -Be $script:adobeRgb
+            $actual = Get-ViewerColor -Path $result.FullName
+            foreach ($channel in 0..2)
+            {
+                [System.Math]::Abs($actual[$channel] - $photoColor[$channel]) | Should -BeLessOrEqual 6 -Because "channel $channel shows $($actual[$channel]), the source shows $($photoColor[$channel])"
+            }
+        }
     }
 
     Context 'When the source is grey with a grey ICC profile' {

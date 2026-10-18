@@ -8,33 +8,36 @@ function Convert-ImageConverterImage
         .DESCRIPTION
         Reads the first frame of the source image, applies the EXIF orientation to the pixels
         (auto-orient) and updates the metadata that still describes the stored orientation,
-        leaves out an ICC profile that lcms cannot apply (damaged or of an unknown colour
-        space), converts CMYK pixels to sRGB for formats that cannot store CMYK, converts the
-        pixels of a source with an ICC profile that matches them (colour or grey) to sRGB for
-        lossy Jxl output (Quality below 100), whose encoder stores no ICC profile, and grey
-        pixels with a grey profile to sRGB for WebP, Avif, Heic, Bmp and Gif output, which store
-        grey pixels as RGB; a grey JPEG XL source, which ImageMagick reads as sRGB, counts as
-        grey. A profile made for other pixels (a grey profile in a colour image or the other way
-        round) is left out of lossless Jxl output, which cannot be written with it, and a grey
-        profile on colour pixels out of Avif and Bmp output, which browsers then show wrongly,
-        out of Heic output, whose encoders get RGB pixels, and out of Jpeg, Png and Tiff output
-        when the pixels are all neutral grey, which these formats store as grey. After the
-        profile is replaced or left out, the icc:* properties that describe the source profile
-        are removed. Optionally strips the metadata but keeps the ICC colour profile (the one
-        left after these steps), flattens transparent pixels onto white for the formats without
-        alpha (Jpeg, CMYK white for a CMYK image; Heic on Windows), writes Tiff output of an
-        image with alpha with at least 8 bits per sample, sets the quality for lossy output
-        formats and writes the image in the requested format; Png output gets the ICC profile
-        only as iCCP chunk, and Png, Jpeg and Tiff output are stored as RGB when an RGB profile
-        is kept for neutral grey pixels. Heic output is encoded by the encoder of the operating
-        system (Invoke-ImageConverterHeicEncoder) from the pixels, the ICC profile, the EXIF
-        block with orientation 1 and the XMP packet. The image is written into a temporary file
-        in the target folder first, through a stream so neither ImageMagick nor the HEIC encoder
-        sees the file name, and then moved over the target, so a failed or stopped conversion
-        never leaves a truncated target file or the temporary file behind; the target folder is
-        created when it does not exist. With Force, the ReadOnly and Hidden attributes of an
-        existing target are cleared before it is replaced and restored when it cannot be
-        replaced.
+        leaves out an ICC profile that lcms cannot apply (damaged or of an unknown colour space),
+        removes the bytes after the size the header of one it can apply declares (they are not
+        part of the profile, and the PNG encoder refuses a profile with them), converts CMYK pixels
+        to sRGB for formats that cannot store CMYK, converts the pixels of a source with an ICC
+        profile that matches them (colour or grey) to sRGB for lossy Jxl output (Quality below
+        100), whose encoder stores no ICC profile, and grey pixels with a grey profile to sRGB for
+        WebP, Avif, Heic, Bmp and Gif output, which store grey pixels as RGB; a grey JPEG XL
+        source, which ImageMagick reads as sRGB, counts as grey. A profile made for other pixels
+        (a grey profile in a colour image or the other way round) is left out of lossless Jxl
+        output, which cannot be written with it, and a grey profile on colour pixels out of Avif
+        and Bmp output, which browsers then show wrongly, out of Heic output, whose encoders get
+        RGB pixels, and out of Jpeg, Png and Tiff output when the pixels are all neutral grey,
+        which these formats store as grey. A profile that the Png or lossless Jxl encoder cannot
+        write (a one-pixel write fails, e.g. for a length that differs from the declared size) is
+        left out of that output. After the profile is replaced or left out, the icc:* properties
+        that describe the source profile are removed. Optionally strips the metadata but keeps
+        the ICC colour profile (the one left after these steps), flattens transparent pixels onto
+        white for the formats without alpha (Jpeg, CMYK white for a CMYK image; Heic on Windows),
+        writes Tiff output of an image with alpha with at least 8 bits per sample, sets the
+        quality for lossy output formats and writes the image in the requested format; Png output
+        gets the ICC profile only as iCCP chunk, and Png, Jpeg and Tiff output are stored as RGB
+        when an RGB profile is kept for neutral grey pixels. Heic output is encoded by the encoder
+        of the operating system (Invoke-ImageConverterHeicEncoder) from the pixels, the ICC
+        profile, the EXIF block with orientation 1 and the XMP packet. The image is written into a
+        temporary file in the target folder first, through a stream so neither ImageMagick nor
+        the HEIC encoder sees the file name, and then moved over the target, so a failed or
+        stopped conversion never leaves a truncated target file or the temporary file behind; the
+        target folder is created when it does not exist. With Force, the ReadOnly and Hidden
+        attributes of an existing target are cleared before it is replaced and restored when it
+        cannot be replaced.
         Failures are written as non-terminating errors through the cmdlet passed in -Cmdlet:
         ImageReadFailed when the source cannot be read, ImageWriteFailed when the target cannot
         be written (also when the HEIC encoder rejects the image, e.g. a size it cannot encode).
@@ -65,7 +68,8 @@ function Convert-ImageConverterImage
         Removes EXIF, XMP, IPTC and comments from the output but keeps the ICC colour profile,
         except where the pixels are converted to sRGB instead (lossy Jxl; grey pixels with a
         grey profile in WebP, Avif, Heic, Bmp and Gif output) or the profile is left out (see
-        the description: a profile that cannot be applied or one made for other pixels).
+        the description: a profile that cannot be applied or written, or one made for other
+        pixels).
 
         .PARAMETER Force
         Replaces an existing target file, also when it is read-only or hidden.
@@ -161,13 +165,14 @@ function Convert-ImageConverterImage
         }
 
         $profileReplaced = $false
-        if ($null -ne $image.GetColorProfile())
+        $readProfile = $image.GetColorProfile()
+        if ($null -ne $readProfile)
         {
             <#
-                lcms cannot use a damaged profile (e.g. cut short) or one that names an unknown colour
-                space: the PNG and lossless JPEG XL encoders fail with it, and Chrome and Edge do not
-                display an Avif that carries it. Viewers ignore it in the source, so it is left out of
-                every output. A conversion of one pixel shows whether lcms can use it.
+                lcms cannot use a damaged profile (e.g. cut short inside its tag data) or one that names
+                an unknown colour space: the PNG and lossless JPEG XL encoders fail with it, and Chrome
+                and Edge do not display an Avif that carries it. Viewers ignore it in the source, so it
+                is left out of every output. A conversion of one pixel shows whether lcms can use it.
             #>
             $probe = $image.CloneArea(0, 0, 1, 1)
             try
@@ -179,11 +184,45 @@ function Convert-ImageConverterImage
                 $probe.Dispose()
             }
 
+            $unusableReason = $null
             if ($null -ne $probeTransform.Exception)
             {
                 $image.RemoveProfile('icc')
+                $unusableReason = $probeTransform.Exception.Message
+            }
+            else
+            {
+                $readProfileData = $readProfile.ToByteArray()
+                $trimmedProfileData = Get-ImageConverterTrimmedColorProfile -Data $readProfileData
+                if ($null -ne $trimmedProfileData)
+                {
+                    <#
+                        The bytes after the size the profile header declares are not part of the profile,
+                        but the encoders would copy them, and the PNG encoder refuses such a profile. lcms
+                        reads a profile only up to that size, so the cut profile is the one the check
+                        above applied, and the icc:* properties stay. Setting a profile on an image that
+                        has one converts the pixels from the old to the new profile, so the old one is
+                        removed first and the pixels stay as they are. SetProfile opens the profile with
+                        lcms and throws when it cannot; the profile is then left out as one that cannot
+                        be applied.
+                    #>
+                    $image.RemoveProfile('icc')
+                    $setTrimmed = Invoke-ImageConverterMethod -InputObject $image -Name 'SetProfile' -ArgumentList ([ImageMagick.ColorProfile]::new($trimmedProfileData))
+                    if ($null -ne $setTrimmed.Exception)
+                    {
+                        $unusableReason = $setTrimmed.Exception.Message
+                    }
+                    else
+                    {
+                        Write-Verbose -Message ('The ICC colour profile is followed by {0} bytes that are not part of it (its header declares {1} bytes), so they are left out of the {2} output: {3}' -f ($readProfileData.Length - $trimmedProfileData.Length), $trimmedProfileData.Length, $Format, $SourcePath)
+                    }
+                }
+            }
+
+            if ($null -ne $unusableReason)
+            {
                 $profileReplaced = $true
-                Write-Verbose -Message "The ICC colour profile cannot be applied ($($probeTransform.Exception.Message)), so it is left out of the $Format output: $SourcePath"
+                Write-Verbose -Message "The ICC colour profile cannot be applied ($unusableReason), so it is left out of the $Format output: $SourcePath"
             }
         }
 
@@ -281,6 +320,36 @@ function Convert-ImageConverterImage
                     $profileReplaced = $true
                     Write-Verbose -Message "Converted the colours to sRGB, because $($toSrgbReason): $SourcePath"
                 }
+            }
+        }
+
+        if ($null -ne $image.GetColorProfile() -and ($Format -eq 'Png' -or ($Format -eq 'Jxl' -and $Quality -eq 100)))
+        {
+            <#
+                libpng and the lossless JPEG XL encoder check the ICC profile they write, the other
+                encoders store it as it is. libpng refuses a profile whose length differs from the size
+                its header declares or, from ICC version 4 on, is not a multiple of 4; libjxl refuses a
+                rendering intent above 3. lcms applies such a profile, so the check above keeps it.
+                Writing one pixel shows whether the bundled encoder takes the profile, also for rules
+                that change between library versions; a failed write would fail the whole file.
+            #>
+            $probe = $image.CloneArea(0, 0, 1, 1)
+            try
+            {
+                # Quality 100 makes the JPEG XL encoder lossless, the only mode that writes the profile.
+                $probe.Quality = [System.UInt32] $Quality
+                $probeWrite = Invoke-ImageConverterMethod -InputObject $probe -Name 'ToByteArray' -ArgumentList ([ImageMagick.MagickFormat] $Format)
+            }
+            finally
+            {
+                $probe.Dispose()
+            }
+
+            if ($null -ne $probeWrite.Exception)
+            {
+                $image.RemoveProfile('icc')
+                $profileReplaced = $true
+                Write-Verbose -Message "The $Format encoder cannot write the ICC colour profile ($($probeWrite.Exception.Message)), so it is left out of the $Format output: $SourcePath"
             }
         }
 

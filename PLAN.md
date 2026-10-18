@@ -64,6 +64,11 @@ After the open items of the step-3 review (step 3b, part 2; same setup, not in C
 - Windows (`PSIC_EXPECT_HEIC_ENCODER=1`): 1199 tests pass, 9 skipped, coverage 98.46 % (1040 commands, the same 16 missed).
 - Linux with `libheif1` + `libheif-plugin-x265`, installed by `.devcontainer/setup.ps1` (`PSIC_EXPECT_HEIC_ENCODER=1`): 1177 pass, 28 skipped, coverage 97.98 % (21 missed); then without the x265 plugin, the HEIC test files and `Convert-Image.tests.ps1`: 328 pass, 59 skipped, including the real missing-encoder tests.
 
+Fix after preview 0.2.0-preview0013 (ICC profile length; local run on Windows, not in CI yet):
+
+- Png output failed with `ImageWriteFailed` ("Incorrect data in iCCP") when the ICC profile has bytes after the size its header declares, as Samsung Galaxy HEIC photos have (two zero bytes in the `colr` box) and the JPEGs the module wrote from them; the bundled libpng refuses such a profile since 1.6.47. A profile that passes the lcms check is then cut to its declared size for every format (`Get-ImageConverterTrimmedColorProfile`, which cuts nothing when the declared size ends inside the tag table; `RemoveProfile` then `SetProfile` through `Invoke-ImageConverterMethod`, so pixels and `icc:*` properties stay, and a profile `SetProfile` refuses is left out like one lcms cannot apply). Checking first matters: `SetProfile` throws for a profile lcms cannot open, which made such files fail with `ImageWriteFailed` instead of being written without the profile. A profile that lcms applies but the Png or lossless Jxl encoder refuses (a version 4 length that is not a multiple of 4, a declared size above the length, a Jxl rendering intent above 3) is found by writing one pixel and left out of that output with a verbose message.
+- Windows: 1166 tests pass, 4 skipped, coverage 98.31 % (1007 commands, still the 17 missed commands of the coverage note in step 2).
+
 ## 1. Rename module to PSImageConverter ✅
 
 Done. Native loading uses the DllImport resolver on every platform now; `SetNativeLibraryDirectory` is gone. Initialisation runs under a process-wide lock (concurrent first imports in thread jobs broke Magick.NET for the whole process).
