@@ -147,7 +147,8 @@ function Convert-Image
         - WebP, Avif: EXIF, XMP and ICC colour profile; no IPTC, no comments.
         - Heic: EXIF, XMP and ICC colour profile on Windows and Linux; on macOS no EXIF and no XMP
           (ImageIO takes no EXIF block), so a warning is written there as for Tiff, and the ICC
-          colour profile is passed to ImageIO (not verified on a Mac yet). No IPTC, no comments.
+          colour profile is kept, except sRGB, which ImageIO stores as nclx colour information.
+          No IPTC, no comments.
         - Jxl: EXIF and XMP; the ICC colour profile only at -Quality 100 (lossless); no IPTC,
           no comments.
         - Tiff: XMP, IPTC, ICC colour profile and comments; no EXIF.

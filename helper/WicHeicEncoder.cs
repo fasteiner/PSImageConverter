@@ -45,6 +45,7 @@ namespace PSImageConverter
 
         // HRESULTs that mean "no HEIC encoder", by the step that returns them.
         private const int WINCODEC_ERR_COMPONENTNOTFOUND = unchecked((int)0x88982F50);
+        private const int WINCODEC_ERR_COMPONENTINITIALIZEFAILURE = unchecked((int)0x88982F8B);
         private const int REGDB_E_CLASSNOTREG = unchecked((int)0x80040154);
         private const int MF_E_TOPO_CODEC_NOT_FOUND = unchecked((int)0xC00D5212);
 
@@ -181,9 +182,10 @@ namespace PSImageConverter
             }
         }
 
-        // CreateEncoder fails without the "HEIF Image Extensions" (no WIC component for the HEIF
-        // container). With the HEIF extension but no HEVC encoder the encoder is created, and
-        // CommitFrame fails, because the frame is compressed there.
+        // CreateEncoder fails without the "HEIF Image Extension" (no WIC component for the HEIF
+        // container), or with 0x88982F8B where the component is registered but cannot start (the
+        // windows-2025 runner image of GitHub Actions). With the HEIF extension but no HEVC encoder
+        // the encoder is created, and CommitFrame fails, because the frame is compressed there.
         private static void Check(int hresult, string step)
         {
             if (hresult >= 0)
@@ -195,7 +197,7 @@ namespace PSImageConverter
             string code = string.Format("0x{0:X8}", hresult);
             string text = (Marshal.GetExceptionForHR(hresult)?.Message ?? string.Empty).Replace("(" + code + ")", string.Empty).Trim().TrimEnd('.');
             string failure = string.Format("WIC {0} failed with HRESULT {1}", step, code) + (text.Length > 0 ? " (" + text + ")" : string.Empty);
-            if (step == "CreateEncoder" && (hresult == WINCODEC_ERR_COMPONENTNOTFOUND || hresult == REGDB_E_CLASSNOTREG))
+            if (step == "CreateEncoder" && (hresult == WINCODEC_ERR_COMPONENTNOTFOUND || hresult == WINCODEC_ERR_COMPONENTINITIALIZEFAILURE || hresult == REGDB_E_CLASSNOTREG))
             {
                 throw new HeicEncoderException("Windows has no HEIF encoder: " + failure + ".", true);
             }

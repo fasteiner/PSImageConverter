@@ -59,8 +59,8 @@ METADATA
         Jpeg, Png         EXIF, XMP, IPTC, ICC colour profile, comments
         WebP, Avif        EXIF, XMP, ICC colour profile
         Heic              Windows, Linux: EXIF, XMP, ICC colour profile;
-                          macOS: no EXIF or XMP, the ICC colour profile is
-                          passed to ImageIO (see WRITING HEIC)
+                          macOS: ICC colour profile (sRGB as nclx colour
+                          information), no EXIF or XMP (see WRITING HEIC)
         Jxl               EXIF, XMP; ICC colour profile only at -Quality 100
         Tiff              XMP, IPTC, ICC colour profile, comments
         Gif               IPTC, ICC colour profile (browsers ignore it in
@@ -173,12 +173,12 @@ WRITING HEIC
 
     Windows and Linux keep EXIF and XMP as they are (the EXIF orientation is
     set to 1) and the ICC colour profile; macOS writes no EXIF or XMP and
-    passes the ICC colour profile to ImageIO. Windows stores no alpha channel
-    (transparent pixels are placed on white, as for Jpeg); Linux keeps it,
-    macOS passes it to ImageIO. An image the encoder rejects fails with
-    ImageWriteFailed: on Windows a side longer than 22528 pixels; on Linux a
-    side longer than 32768 pixels, or one shorter than 32 pixels next to one
-    longer than 4096. The macOS encoder has not run on a Mac yet.
+    keeps the ICC colour profile, except sRGB, which ImageIO stores as nclx
+    colour information instead. Windows stores no alpha channel (transparent
+    pixels are placed on white, as for Jpeg); Linux and macOS keep it. An
+    image the encoder rejects fails with ImageWriteFailed: on Windows a side
+    longer than 22528 pixels; on Linux a side longer than 32768 pixels, or
+    one shorter than 32 pixels next to one longer than 4096.
 
     Windows' own viewer (Photos, Explorer) does not show a HEIC image with a
     side shorter than 8 pixels, whichever program wrote it, ignores the alpha

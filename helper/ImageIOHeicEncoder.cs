@@ -28,8 +28,17 @@ namespace PSImageConverter
         {
             ImageIOConstants constants = ImageIOConstants.Instance;
 
-            // Magick.NET returns straight (not premultiplied) alpha.
-            uint alphaInfo = channels == 4 ? ImageIONative.KCGImageAlphaLast : ImageIONative.KCGImageAlphaNone;
+            // Magick.NET returns straight (not premultiplied) alpha, which ImageIO stores as it is.
+            uint alphaInfo = ImageIONative.KCGImageAlphaLast;
+            if (channels == 3)
+            {
+                // ImageIO's HEIC encoder leaves the last column and row of an image with an odd width
+                // or height empty when it gets 24-bit pixels (they decode as green, also in ImageIO
+                // itself); 32-bit pixels whose fourth byte is skipped encode correctly.
+                pixels = ExpandToFourBytes(pixels);
+                channels = 4;
+                alphaInfo = ImageIONative.KCGImageAlphaNoneSkipLast;
+            }
 
             IntPtr pixelData = IntPtr.Zero;
             IntPtr provider = IntPtr.Zero;
@@ -148,21 +157,35 @@ namespace PSImageConverter
             return colorSpace;
         }
 
-        // The lossy quality (0.01 to 1.0) and orientation 1, because the pixels are already upright.
+        // RGB pixels as RGBX, the fourth byte of every pixel 255.
+        private static byte[] ExpandToFourBytes(byte[] pixels)
+        {
+            byte[] expanded = new byte[pixels.Length / 3 * 4];
+            for (int source = 0, target = 0; source < pixels.Length; source += 3, target += 4)
+            {
+                expanded[target] = pixels[source];
+                expanded[target + 1] = pixels[source + 1];
+                expanded[target + 2] = pixels[source + 2];
+                expanded[target + 3] = 255;
+            }
+
+            return expanded;
+        }
+
+        // The lossy quality (0.01 to 1.0) only. The pixels are already upright, and without an
+        // orientation property ImageIO writes no EXIF item; with one it writes an EXIF block that
+        // holds just that tag.
         private static IntPtr CreateProperties(int quality, ImageIOConstants constants)
         {
             IntPtr qualityNumber = IntPtr.Zero;
-            IntPtr orientationNumber = IntPtr.Zero;
             try
             {
                 qualityNumber = ImageIONative.CreateNumber(quality / 100.0);
-                orientationNumber = ImageIONative.CreateNumber(1);
-                return ImageIONative.CreateDictionary(new[] { constants.DestinationLossyCompressionQuality, constants.PropertyOrientation }, new[] { qualityNumber, orientationNumber });
+                return ImageIONative.CreateDictionary(new[] { constants.DestinationLossyCompressionQuality }, new[] { qualityNumber });
             }
             finally
             {
                 ImageIONative.Release(ref qualityNumber);
-                ImageIONative.Release(ref orientationNumber);
             }
         }
     }

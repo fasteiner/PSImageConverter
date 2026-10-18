@@ -97,9 +97,9 @@ function ConvertTo-Heic
           Images larger than 8 megapixels are encoded in several slices, so Magick.NET can read
           them back; Windows' own viewer does not open such files, nor files with a side longer
           than 16384 pixels.
-        - macOS: no EXIF and no XMP (a warning is written for a source with EXIF data); the ICC
-          colour profile and the alpha channel are passed to ImageIO. The macOS encoder has not
-          been verified on a Mac yet, so whether ImageIO stores them is not known.
+        - macOS: no EXIF and no XMP (a warning is written for a source with EXIF data); the alpha
+          channel and the ICC colour profile are kept, except sRGB, which ImageIO stores as nclx
+          colour information instead of a profile.
 
         IPTC data and comments are not written. EXIF and XMP are stored as they are, so a block
         another program could not parse is kept, as in the other output formats; the EXIF

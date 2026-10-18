@@ -28,10 +28,9 @@ namespace PSImageConverter
 
         // Values from the macOS SDK headers (CFString.h, CFNumber.h, CGImage.h, CGColorSpace.h).
         internal const uint KCFStringEncodingUTF8 = 0x08000100;
-        internal const nint KCFNumberSInt32Type = 3;
         internal const nint KCFNumberDoubleType = 13;
-        internal const uint KCGImageAlphaNone = 0;
         internal const uint KCGImageAlphaLast = 3;
+        internal const uint KCGImageAlphaNoneSkipLast = 5;
         internal const uint KCGBitmapByteOrderDefault = 0;
         internal const int KCGRenderingIntentDefault = 0;
 
@@ -52,9 +51,6 @@ namespace PSImageConverter
 
         [DllImport(CoreFoundationLibrary)]
         internal static extern IntPtr CFNumberCreate(IntPtr allocator, nint theType, ref double valuePtr);
-
-        [DllImport(CoreFoundationLibrary)]
-        internal static extern IntPtr CFNumberCreate(IntPtr allocator, nint theType, ref int valuePtr);
 
         [DllImport(CoreFoundationLibrary)]
         internal static extern IntPtr CFDictionaryCreate(IntPtr allocator, IntPtr[] keys, IntPtr[] values, nint numValues, IntPtr keyCallBacks, IntPtr valueCallBacks);
@@ -161,18 +157,6 @@ namespace PSImageConverter
             return number;
         }
 
-        // Create rule: the caller releases the CFNumber.
-        internal static IntPtr CreateNumber(int value)
-        {
-            IntPtr number = CFNumberCreate(IntPtr.Zero, KCFNumberSInt32Type, ref value);
-            if (number == IntPtr.Zero)
-            {
-                throw new OutOfMemoryException("CFNumberCreate returned NULL.");
-            }
-
-            return number;
-        }
-
         // The dictionary retains its keys and values, so the caller may release its own references
         // right after this call.
         internal static IntPtr CreateDictionary(IntPtr[] keys, IntPtr[] values)
@@ -213,7 +197,6 @@ namespace PSImageConverter
             TypeDictionaryValueCallBacks = NativeLibrary.GetExport(coreFoundation, "kCFTypeDictionaryValueCallBacks");
             ColorSpaceSrgb = ReadPointer(coreGraphics, "kCGColorSpaceSRGB");
             DestinationLossyCompressionQuality = ReadPointer(imageIO, "kCGImageDestinationLossyCompressionQuality");
-            PropertyOrientation = ReadPointer(imageIO, "kCGImagePropertyOrientation");
         }
 
         internal static ImageIOConstants Instance
@@ -228,8 +211,6 @@ namespace PSImageConverter
         internal IntPtr ColorSpaceSrgb { get; }
 
         internal IntPtr DestinationLossyCompressionQuality { get; }
-
-        internal IntPtr PropertyOrientation { get; }
 
         private static IntPtr ReadPointer(IntPtr library, string name)
         {
