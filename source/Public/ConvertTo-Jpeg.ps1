@@ -32,12 +32,13 @@ function ConvertTo-Jpeg
         file. The folder is created if it does not exist; a folder that cannot be created or
         written to fails each file with ImageWriteFailed. Only file system paths are supported:
         a value that cannot name a folder (unknown drive, another provider, invalid characters,
-        an existing file or a link without target on the way) stops the call with one
-        terminating error.
+        an existing file or a link without target or that cannot be resolved on the way) stops
+        the call with one terminating error.
 
         .PARAMETER StripMetadata
         Removes EXIF (including the GPS location), XMP and IPTC metadata and comments from the
-        output. The ICC colour profile is kept, so photos keep their colours.
+        output. The ICC colour profile is kept, so photos that carry one keep their colours
+        (see Get-Help Convert-Image -Full for sources without one).
 
         .PARAMETER Force
         Overwrites output files that existed before the call, also read-only or hidden ones.
@@ -79,8 +80,8 @@ function ConvertTo-Jpeg
         -StripMetadata is used. JPEG has no transparency: transparent and half-transparent
         pixels (e.g. of a PNG logo) are placed on a white background (paper white for a CMYK
         image, which stays CMYK). See Get-Help Convert-Image -Full for the other formats,
-        sources with several frames or damaged data, the preference variables of the caller
-        and parallel conversions.
+        sources with several frames or damaged data, the preference variables of the caller,
+        parallel conversions and PSDrives that are not global.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '', Justification = 'ShouldProcess is called by Convert-Image, which receives -WhatIf and -Confirm through the bound parameters.')]
     [CmdletBinding(DefaultParameterSetName = 'Path', SupportsShouldProcess = $true)]

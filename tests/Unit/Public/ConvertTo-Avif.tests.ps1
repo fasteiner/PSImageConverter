@@ -213,6 +213,7 @@ Describe 'ConvertTo-Avif' {
             # An alias wins over every function of the same name, in every scope.
             function global:Invoke-PsicHijack
             {
+                [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Arguments', Justification = 'Takes every argument the wrapper passes to Convert-Image, so the call binds; the values do not matter.')]
                 param ([Parameter(ValueFromRemainingArguments = $true)] $Arguments)
 
                 'hijacked'
@@ -229,6 +230,88 @@ Describe 'ConvertTo-Avif' {
 
             $result | Should -BeOfType [System.IO.FileInfo]
             $result.Name | Should -Be 'IMG_0001.avif'
+        }
+    }
+
+    Context 'When a path uses a PSDrive that the caller created in its own scope' {
+        BeforeEach {
+            # The module resolves paths in its own session state, which sees only the global drives.
+            $script:hint = "drive 'PsicScopeDrive' was created in a scope that the PSImageConverter module cannot see (inside a function, in a script run with & or by its path, or in another module). Create the drive with New-PSDrive -Scope Global, or use the file system path; the root of the drive is '$($script:tempDir.FullName)'."
+        }
+
+        It 'Should write PathNotFound of Convert-Image that explains the drive for <Case>' -ForEach @(
+            @{ Case = '-Path'; Parameters = @{ Path = 'PsicScopeDrive:\IMG_0001.HEIC' }; Location = $null }
+            @{ Case = '-LiteralPath'; Parameters = @{ LiteralPath = 'PsicScopeDrive:\IMG_0001.HEIC' }; Location = $null }
+            @{ Case = 'a relative path'; Parameters = @{ Path = 'IMG_0001.HEIC' }; Location = 'PsicScopeDrive:\' }
+        ) {
+            # Without -Scope Global the drive exists in this It block's scope only, like a drive created in a function.
+            $null = New-PSDrive -Name 'PsicScopeDrive' -PSProvider FileSystem -Root $script:tempDir.FullName
+            $errorCount = $global:Error.Count
+            if ($Location)
+            {
+                Push-Location -Path $Location
+            }
+
+            # 'PsicScopeDrive:\' on Windows, 'PsicScopeDrive:/' on Linux and macOS.
+            $currentLocation = (Get-Location).Path
+            try
+            {
+                $result = ConvertTo-Avif @Parameters -ErrorAction SilentlyContinue -ErrorVariable conversionError
+            }
+            finally
+            {
+                if ($Location)
+                {
+                    Pop-Location
+                }
+            }
+
+            $result | Should -BeNullOrEmpty
+            $conversionError | Should -HaveCount 1
+            $global:Error.Count - $errorCount | Should -Be 1
+            $conversionError[0].FullyQualifiedErrorId | Should -Be 'PathNotFound,Convert-Image'
+            $conversionError[0].TargetObject | Should -Be @($Parameters.Values)[0]
+            $expected = "Cannot resolve the path '$(@($Parameters.Values)[0])': $($script:hint)"
+            if ($Location)
+            {
+                $expected = "Cannot resolve the path '$(@($Parameters.Values)[0])', which is relative to the current location '$currentLocation': $($script:hint)"
+            }
+            "$($conversionError[0])" | Should -Be $expected
+
+        }
+
+        It 'Should stop the call with one terminating InvalidDestinationPath error of ConvertTo-Avif that explains the drive' {
+            $null = New-PSDrive -Name 'PsicScopeDrive' -PSProvider FileSystem -Root $script:tempDir.FullName
+            $errorCount = $global:Error.Count
+            $caught = $null
+
+            try
+            {
+                $null = ConvertTo-Avif -LiteralPath $script:source -DestinationPath 'PsicScopeDrive:\out'
+            }
+            catch
+            {
+                $caught = $_
+            }
+
+            $caught.FullyQualifiedErrorId | Should -Be 'InvalidDestinationPath,ConvertTo-Avif'
+            $caught.TargetObject | Should -Be 'PsicScopeDrive:\out'
+            "$caught" | Should -Be "The destination path 'PsicScopeDrive:\out' is not valid: $($script:hint)"
+            $global:Error.Count - $errorCount | Should -Be 1
+        }
+
+        It 'Should use a global drive for -Path and -DestinationPath' {
+            $null = New-PSDrive -Name 'PsicGlobalDrive' -PSProvider FileSystem -Root $script:tempDir.FullName -Scope Global
+            try
+            {
+                $result = ConvertTo-Avif -Path 'PsicGlobalDrive:\IMG_0001.HEIC' -DestinationPath 'PsicGlobalDrive:\out'
+            }
+            finally
+            {
+                Remove-PSDrive -Name 'PsicGlobalDrive' -Scope Global
+            }
+
+            $result.DirectoryName | Should -Be (Join-Path -Path $script:tempDir.FullName -ChildPath 'out' | Convert-Path)
         }
     }
 }

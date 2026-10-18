@@ -115,7 +115,7 @@ Describe 'Write-ImageConverterReadWarning' {
         $result.Verbose | Should -Be @("ImageMagick warning while reading '/photos/a.png': tEXt: CRC error")
     }
 
-    It 'Should report a CorruptImageError of the frame count as damage' {
+    It 'Should report a MagickCorruptImageErrorException of the frame count as damage' {
         $countError = [ImageMagick.MagickCorruptImageErrorException]::new("corrupt image ``/photos/anim.gif' @ error/gif.c/PingGIFImage/1032")
 
         $result = Invoke-ReadWarning -Path '/photos/anim.gif' -Warning @($countError)

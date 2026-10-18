@@ -29,6 +29,41 @@ BeforeAll {
         }
     }
 
+    # Converts the image (lossy Jxl by default) and returns the verbose messages, the error records and the first pixel of the output.
+    function Invoke-ProfileConversion
+    {
+        param ([System.String] $SourcePath, [System.String] $TargetPath, [System.String] $Format = 'Jxl', [System.Int32] $Quality = 90)
+
+        $records = InModuleScope -ModuleName $script:moduleName -Parameters @{ SourcePath = $SourcePath; TargetPath = $TargetPath; Format = $Format; Quality = $Quality } {
+            $verboseRecords = & {
+                [CmdletBinding()]
+                param ()
+
+                Convert-ImageConverterImage -Cmdlet $PSCmdlet -SourcePath $SourcePath -TargetPath $TargetPath -Format $Format -Quality $Quality
+            } -Verbose -ErrorAction SilentlyContinue -ErrorVariable conversionErrors 4>&1 | Where-Object -FilterScript { $_ -is [System.Management.Automation.VerboseRecord] }
+
+            [PSCustomObject] @{
+                Verbose = "$verboseRecords"
+                Errors  = @($conversionErrors)
+            }
+        }
+
+        $output = [ImageMagick.MagickImage]::new($TargetPath)
+        try
+        {
+            $color = $output.GetPixels().GetPixel(0, 0).ToColor()
+            [PSCustomObject] @{
+                Verbose = $records.Verbose
+                Errors  = $records.Errors
+                Color   = @([System.Int32] $color.R, [System.Int32] $color.G, [System.Int32] $color.B)
+            }
+        }
+        finally
+        {
+            $output.Dispose()
+        }
+    }
+
     # Returns the chunk types of a PNG file, text chunks with their keyword, e.g. 'zTXt:Raw profile type icc'.
     function Get-PngChunkName
     {
@@ -253,84 +288,156 @@ Describe 'Convert-ImageConverterImage' {
         Get-PngChunkName -Path $target | Should -Not -Contain 'iCCP'
     }
 
-    It 'Should write lossy Jxl with unchanged colours when the ICC profile of the source is damaged' {
-        # A JPEG whose ICC profile (APP2 segment) has a valid header but a destroyed tag table: ImageMagick reads it, lcms cannot use it.
-        $iccProfile = [ImageMagick.ColorProfiles]::AdobeRGB1998.ToByteArray()
-        for ($index = 132; $index -lt $iccProfile.Length; $index++)
-        {
-            $iccProfile[$index] = 0xAB
+    Context 'When lcms cannot apply the ICC profile of the source' {
+        BeforeAll {
+            $adobeRgb = [ImageMagick.ColorProfiles]::AdobeRGB1998.ToByteArray()
+
+            # A valid header but a destroyed tag table: ImageMagick reads the profile, lcms cannot use it.
+            $tagTable = [System.Byte[]] $adobeRgb.Clone()
+            for ($index = 132; $index -lt $tagTable.Length; $index++)
+            {
+                $tagTable[$index] = 0xAB
+            }
+
+            # An unknown data colour space in the header (byte 16).
+            $unknownSpace = [System.Byte[]] $adobeRgb.Clone()
+            [System.Text.Encoding]::ASCII.GetBytes('XXXX').CopyTo($unknownSpace, 16)
+
+            $script:damagedProfiles = @{
+                tagTable      = $tagTable
+                unknownSpace  = $unknownSpace
+                # Cut short, as when the second of two APP2 segments is lost: the header still names the full length.
+                truncated     = [System.Byte[]] $adobeRgb[0..299]
+                truncatedGray = [System.Byte[]] (Get-TestGrayColorProfile).ToByteArray()[0..199]
+            }
         }
 
-        $payload = [System.Text.Encoding]::ASCII.GetBytes("ICC_PROFILE`0") + [System.Byte[]] @(1, 1) + $iccProfile
-        $segment = [System.Byte[]] @(0xFF, 0xE2, [System.Byte] (($payload.Length + 2) -shr 8), [System.Byte] (($payload.Length + 2) -band 0xFF)) + $payload
-        $jpeg = [System.IO.File]::ReadAllBytes((New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'plain.jpg')).FullName)
-        $source = Join-Path -Path $script:tempDir.FullName -ChildPath 'broken-profile.jpg'
-        [System.IO.File]::WriteAllBytes($source, [System.Byte[]] ($jpeg[0..1] + $segment + $jpeg[2..($jpeg.Length - 1)]))
-        $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.jxl'
+        It 'Should leave the <Case> out of <Format> output and write the colours unchanged' -ForEach @(
+            foreach ($format in @('Jpeg', 'Png', 'WebP', 'Avif', 'Jxl', 'Tiff', 'Bmp', 'Gif'))
+            {
+                @{ Format = $format; Case = 'profile with a destroyed tag table'; ProfileName = 'tagTable'; Gray = $false; Quality = 100 }
+                @{ Format = $format; Case = 'profile of an unknown colour space'; ProfileName = 'unknownSpace'; Gray = $false; Quality = 100 }
+                @{ Format = $format; Case = 'profile that is cut short'; ProfileName = 'truncated'; Gray = $false; Quality = 100 }
+                @{ Format = $format; Case = 'grey profile that is cut short'; ProfileName = 'truncatedGray'; Gray = $true; Quality = 100 }
+            }
+            @{ Format = 'Jxl'; Case = 'profile that is cut short (lossy)'; ProfileName = 'truncated'; Gray = $false; Quality = 90 }
+        ) {
+            <#
+                Before, Png and lossless Jxl output failed with such a profile ('Incorrect data in iCCP',
+                UnableToWriteImageData), and Chrome and Edge did not display the Avif that kept it.
+            #>
+            $color = '#4080C0'
+            if ($Gray)
+            {
+                $color = '#808080'
+            }
 
-        $verbose = InModuleScope -ModuleName $script:moduleName -Parameters @{ SourcePath = $source; TargetPath = $target } {
-            & {
-                [CmdletBinding()]
-                param ()
+            $source = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'source.jpg') -Color $color
+            $null = Add-TestJpegColorProfile -Path $source.FullName -ColorProfile $script:damagedProfiles[$ProfileName]
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath "out.$Format"
 
-                Convert-ImageConverterImage -Cmdlet $PSCmdlet -SourcePath $SourcePath -TargetPath $TargetPath -Format 'Jxl' -Quality 90
-            } -ErrorVariable conversionErrors -WarningVariable conversionWarnings -Verbose 4>&1
+            $result = InModuleScope -ModuleName $script:moduleName -Parameters @{ SourcePath = $source.FullName; TargetPath = $target; Format = $Format; Quality = $Quality } {
+                $verboseRecords = & {
+                    [CmdletBinding()]
+                    param ()
 
-            $conversionErrors | Should -BeNullOrEmpty
-            $conversionWarnings | Should -BeNullOrEmpty
+                    Convert-ImageConverterImage -Cmdlet $PSCmdlet -SourcePath $SourcePath -TargetPath $TargetPath -Format $Format -Quality $Quality
+                } -ErrorAction SilentlyContinue -ErrorVariable conversionErrors -WarningAction SilentlyContinue -Verbose 4>&1 | Where-Object -FilterScript { $_ -is [System.Management.Automation.VerboseRecord] }
+
+                [PSCustomObject] @{
+                    Verbose = "$verboseRecords"
+                    Errors  = @($conversionErrors)
+                }
+            }
+
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Verbose | Should -BeLike "*The ICC colour profile cannot be applied (*), so it is left out of the $Format output: $($source.FullName)*"
+            if ($Format -ne 'Jxl')
+            {
+                (Get-TestStoredColorLayout -Path $target).ProfileSpace | Should -BeNullOrEmpty
+            }
+
+            $output = [ImageMagick.MagickImage]::new($target)
+            try
+            {
+                # Viewers ignore such a profile in the source, so they show the stored values.
+                $expected = [ImageMagick.MagickColor]::new($color)
+                $actual = $output.GetPixels().GetPixel(0, 0).ToColor()
+                [System.Math]::Abs([System.Int32] $actual.R - $expected.R) | Should -BeLessOrEqual 6
+                [System.Math]::Abs([System.Int32] $actual.B - $expected.B) | Should -BeLessOrEqual 6
+            }
+            finally
+            {
+                $output.Dispose()
+            }
         }
 
-        "$verbose" | Should -BeLike "*The ICC colour profile cannot be applied (*), so the colours are written unchanged: $source*"
-        $output = [ImageMagick.MagickImage]::new($target)
-        try
-        {
-            # Converted as Adobe RGB the red channel would drop from 64 to about 0.
-            [System.Math]::Abs([System.Int32] $output.GetPixels().GetPixel(0, 0).ToColor().R - 64) | Should -BeLessOrEqual 4
+        It 'Should convert a CMYK source whose profile cannot be applied through the SWOP profile' {
+            # The CMYK profile of a print JPEG with a destroyed tag table, cut to fit into one APP2 segment.
+            $print = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'print.jpg') -Cmyk
+            $image = [ImageMagick.MagickImage]::new($print.FullName)
+            try
+            {
+                $expected = $image.Clone()
+                $null = $expected.TransformColorSpace([ImageMagick.ColorProfiles]::SRGB)
+                $expectedColor = $expected.GetPixels().GetPixel(0, 0).ToColor()
+                $expected.Dispose()
+
+                $image.RemoveProfile('icc')
+                $source = Join-Path -Path $script:tempDir.FullName -ChildPath 'damaged-print.jpg'
+                $image.Write($source)
+            }
+            finally
+            {
+                $image.Dispose()
+            }
+
+            $cmykProfile = [System.Byte[]] [ImageMagick.ColorProfiles]::USWebCoatedSWOP.ToByteArray()[0..59999]
+            for ($index = 132; $index -lt $cmykProfile.Length; $index++)
+            {
+                $cmykProfile[$index] = 0xAB
+            }
+
+            $null = Add-TestJpegColorProfile -Path $source -ColorProfile $cmykProfile
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.png'
+
+            $result = Invoke-ProfileConversion -SourcePath $source -TargetPath $target -Format 'Png'
+
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Verbose | Should -BeLike '*The ICC colour profile cannot be applied (*), so it is left out of the Png output*'
+            [System.Math]::Abs($result.Color[0] - $expectedColor.R) | Should -BeLessOrEqual 2
+            [System.Math]::Abs($result.Color[2] - $expectedColor.B) | Should -BeLessOrEqual 2
         }
-        finally
-        {
-            $output.Dispose()
+
+        It 'Should keep a profile that lcms can apply' {
+            $source = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'wide.jpg') -ColorProfile
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.avif'
+
+            $result = Invoke-Conversion -Parameters @{ SourcePath = $source.FullName; TargetPath = $target; Format = 'Avif' }
+
+            $result.Errors | Should -BeNullOrEmpty
+            (Get-TestStoredColorLayout -Path $target).ProfileSpace | Should -Be 'RGB'
         }
     }
 
     Context 'When the ICC profile is made for other pixels' {
         BeforeAll {
-            # Converts lossy Jxl and returns the verbose messages and the first pixel of the output.
-            function Invoke-JxlConversion
+            # A colour JPEG (#4080C0) with a grey profile, which viewers ignore.
+            function New-ColorJpegWithGrayProfile
             {
-                param ([System.String] $SourcePath, [System.String] $TargetPath)
+                [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Test fixture: writes a file into the temporary folder of a test.')]
+                param ([System.String] $Path)
 
-                $verbose = InModuleScope -ModuleName $script:moduleName -Parameters @{ SourcePath = $SourcePath; TargetPath = $TargetPath } {
-                    & {
-                        [CmdletBinding()]
-                        param ()
-
-                        Convert-ImageConverterImage -Cmdlet $PSCmdlet -SourcePath $SourcePath -TargetPath $TargetPath -Format 'Jxl' -Quality 90
-                    } -Verbose 4>&1 | Where-Object -FilterScript { $_ -is [System.Management.Automation.VerboseRecord] }
-                }
-
-                $output = [ImageMagick.MagickImage]::new($TargetPath)
-                try
-                {
-                    $color = $output.GetPixels().GetPixel(0, 0).ToColor()
-                    [PSCustomObject] @{
-                        Verbose = "$verbose"
-                        Color   = @([System.Int32] $color.R, [System.Int32] $color.G, [System.Int32] $color.B)
-                    }
-                }
-                finally
-                {
-                    $output.Dispose()
-                }
+                $jpeg = New-TestImage -Path $Path -Color '#4080C0'
+                Add-TestJpegColorProfile -Path $jpeg.FullName -ColorProfile (Get-TestGrayColorProfile).ToByteArray()
             }
         }
 
         It 'Should write lossy Jxl with the colours unchanged for a colour JPEG with a grey profile' {
             # Viewers ignore a grey profile in a colour image; converted through it the colours would turn grey.
-            $source = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'colour.jpg') -Color '#4080C0'
-            $null = Add-TestJpegColorProfile -Path $source.FullName -ColorProfile (Get-TestGrayColorProfile).ToByteArray()
+            $source = New-ColorJpegWithGrayProfile -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'colour.jpg')
 
-            $result = Invoke-JxlConversion -SourcePath $source.FullName -TargetPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out.jxl')
+            $result = Invoke-ProfileConversion -SourcePath $source.FullName -TargetPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out.jxl')
 
             $result.Verbose | Should -BeLike "*The ICC colour profile is made for grey pixels and does not match the image, so the colours are written unchanged: $($source.FullName)*"
             $expected = @(64, 128, 192)
@@ -344,7 +451,7 @@ Describe 'Convert-ImageConverterImage' {
             # ImageMagick writes neutral grey pixels as a one-channel JPEG and keeps the Adobe RGB profile.
             $source = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'grey.jpg') -Color '#808080' -ColorProfile
 
-            $result = Invoke-JxlConversion -SourcePath $source.FullName -TargetPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out.jxl')
+            $result = Invoke-ProfileConversion -SourcePath $source.FullName -TargetPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out.jxl')
 
             $result.Verbose | Should -BeLike "*The ICC colour profile is made for colour pixels and does not match the image, so the colours are written unchanged: $($source.FullName)*"
             [System.Math]::Abs($result.Color[0] - 128) | Should -BeLessOrEqual 2
@@ -364,12 +471,284 @@ Describe 'Convert-ImageConverterImage' {
                 $image.Dispose()
             }
 
-            $result = Invoke-JxlConversion -SourcePath $source -TargetPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out.jxl')
+            $result = Invoke-ProfileConversion -SourcePath $source -TargetPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out.jxl')
 
             $result.Verbose | Should -BeLike '*Converted the colours to sRGB*'
             # Grey 128 with gamma 1.8 shows as about 146 in sRGB.
             [System.Math]::Abs($result.Color[0] - 146) | Should -BeLessOrEqual 3
         }
+
+        It 'Should leave a grey profile on colour pixels out of <Format> output, which browsers do not show correctly with it' -ForEach @(
+            @{ Format = 'Avif'; Extension = '.avif' }
+            @{ Format = 'Bmp'; Extension = '.bmp' }
+        ) {
+            $source = New-ColorJpegWithGrayProfile -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'colour.jpg')
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath "out$Extension"
+
+            $result = Invoke-ProfileConversion -SourcePath $source.FullName -TargetPath $target -Format $Format
+
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Verbose | Should -BeLike "*The ICC colour profile is made for grey pixels and does not match the image, so it is left out of the $Format output: $($source.FullName)*"
+            (Get-TestStoredColorLayout -Path $target).ProfileSpace | Should -BeNullOrEmpty
+            $expected = @(64, 128, 192)
+            foreach ($channel in 0..2)
+            {
+                [System.Math]::Abs($result.Color[$channel] - $expected[$channel]) | Should -BeLessOrEqual 4 -Because "channel $channel is $($result.Color[$channel])"
+            }
+        }
+
+        It 'Should keep a grey profile on colour pixels in <Format> output, whose viewers ignore it' -ForEach @(
+            @{ Format = 'Jpeg'; Extension = '.jpg' }
+            @{ Format = 'Png'; Extension = '.png' }
+            @{ Format = 'WebP'; Extension = '.webp' }
+            @{ Format = 'Tiff'; Extension = '.tif' }
+            @{ Format = 'Gif'; Extension = '.gif' }
+        ) {
+            $source = New-ColorJpegWithGrayProfile -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'colour.jpg')
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath "out$Extension"
+
+            $result = Invoke-ProfileConversion -SourcePath $source.FullName -TargetPath $target -Format $Format
+
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Verbose | Should -Not -BeLike '*ICC colour profile*'
+            (Get-TestStoredColorLayout -Path $target).ProfileSpace | Should -Be 'GRAY'
+        }
+
+        It 'Should leave a profile made for <Kind> pixels out of lossless Jxl output, which cannot be written with it' -ForEach @(
+            @{ Kind = 'grey' }
+            @{ Kind = 'colour' }
+        ) {
+            $sourcePath = Join-Path -Path $script:tempDir.FullName -ChildPath 'source.jpg'
+            if ($Kind -eq 'grey')
+            {
+                $source = New-ColorJpegWithGrayProfile -Path $sourcePath
+                $expected = 64
+            }
+            else
+            {
+                # ImageMagick writes neutral grey pixels as a one-channel JPEG and keeps the Adobe RGB profile.
+                $source = New-TestImage -Path $sourcePath -Color '#808080' -ColorProfile
+                $expected = 128
+            }
+
+            $result = Invoke-ProfileConversion -SourcePath $source.FullName -TargetPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out.jxl') -Quality 100
+
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Verbose | Should -BeLike "*The ICC colour profile is made for $Kind pixels and does not match the image, so it is left out of the Jxl output: $($source.FullName)*"
+            [System.Math]::Abs($result.Color[0] - $expected) | Should -BeLessOrEqual 1
+        }
+
+        It 'Should keep an RGB profile on grey pixels in <Format> output, which stores them as RGB' -ForEach @(
+            @{ Format = 'WebP'; Extension = '.webp' }
+            @{ Format = 'Avif'; Extension = '.avif' }
+            @{ Format = 'Bmp'; Extension = '.bmp' }
+            @{ Format = 'Gif'; Extension = '.gif' }
+        ) {
+            $source = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'grey.jpg') -Color '#808080' -ColorProfile
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath "out$Extension"
+
+            $result = Invoke-ProfileConversion -SourcePath $source.FullName -TargetPath $target -Format $Format
+
+            $result.Errors | Should -BeNullOrEmpty
+            $layout = Get-TestStoredColorLayout -Path $target
+            $layout.Channels | Should -Be 'RGB'
+            $layout.ProfileSpace | Should -Be 'RGB'
+        }
+
+        It 'Should leave a grey profile on neutral colour pixels out of <Format> output, which stores them as grey' -ForEach @(
+            @{ Format = 'Jpeg'; Extension = '.jpg' }
+            @{ Format = 'Png'; Extension = '.png' }
+            @{ Format = 'Tiff'; Extension = '.tif' }
+        ) {
+            <#
+                An RGB JPEG whose pixels are all neutral grey, with a grey profile that viewers ignore: these
+                encoders store the pixels as grey, which would make the profile valid, and viewers would
+                then show grey 128 as 146.
+            #>
+            $image = [ImageMagick.MagickImage]::new([ImageMagick.MagickColor]::new('#808080'), 16, 16)
+            try
+            {
+                $image.Settings.ColorType = [ImageMagick.ColorType]::TrueColor
+                $sourcePath = Join-Path -Path $script:tempDir.FullName -ChildPath 'neutral.jpg'
+                $image.Write($sourcePath, [ImageMagick.MagickFormat]::Jpeg)
+            }
+            finally
+            {
+                $image.Dispose()
+            }
+
+            $null = Add-TestJpegColorProfile -Path $sourcePath -ColorProfile (Get-TestGrayColorProfile).ToByteArray()
+            (Get-TestStoredColorLayout -Path $sourcePath).Channels | Should -Be 'RGB' -Because 'the fixture stores its grey pixels as RGB'
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath "out$Extension"
+
+            $result = Invoke-ProfileConversion -SourcePath $sourcePath -TargetPath $target -Format $Format
+
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Verbose | Should -BeLike "*The ICC colour profile is made for grey pixels and does not match the image, so it is left out of the $Format output: $sourcePath*"
+            (Get-TestStoredColorLayout -Path $target).ProfileSpace | Should -BeNullOrEmpty
+            [System.Math]::Abs($result.Color[0] - 128) | Should -BeLessOrEqual 1
+        }
+    }
+
+    Context 'When the source is a grey JPEG XL with a grey profile' {
+        BeforeEach {
+            <#
+                Lossless Jxl output of a grey JPEG with a grey profile, which a colour-managed viewer shows
+                as 146. ImageMagick reads such a file as sRGB with three equal channels.
+            #>
+            $grayJpeg = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'grey.jpg') -GrayColorProfile -Color '#808080'
+            $script:grayJxl = Join-Path -Path $script:tempDir.FullName -ChildPath 'grey.jxl'
+            $null = Invoke-Conversion -Parameters @{ SourcePath = $grayJpeg.FullName; TargetPath = $script:grayJxl; Format = 'Jxl'; Quality = 100 }
+            $image = [ImageMagick.MagickImage]::new($script:grayJxl)
+            try
+            {
+                $image.ColorSpace | Should -Be 'sRGB' -Because 'the fixture is read as sRGB'
+                $image.GetColorProfile().ColorSpace | Should -Be 'Gray'
+            }
+            finally
+            {
+                $image.Dispose()
+            }
+        }
+
+        It 'Should convert the grey to sRGB for <Format> output, StripMetadata <StripMetadata>' -ForEach @(
+            foreach ($format in @('WebP', 'Avif', 'Bmp', 'Gif'))
+            {
+                foreach ($strip in @($false, $true))
+                {
+                    @{ Format = $format; StripMetadata = $strip }
+                }
+            }
+        ) {
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath "out.$Format"
+
+            $result = Invoke-Conversion -Parameters @{ SourcePath = $script:grayJxl; TargetPath = $target; Format = $Format; StripMetadata = $StripMetadata }
+
+            $result.Errors | Should -BeNullOrEmpty
+            $layout = Get-TestStoredColorLayout -Path $target
+            $layout.Channels | Should -Be 'RGB'
+            $layout.ProfileSpace | Should -Not -Be 'GRAY'
+            $output = [ImageMagick.MagickImage]::new($target)
+            try
+            {
+                # Grey 128 with gamma 1.8 shows as about 146 in sRGB.
+                [System.Math]::Abs([System.Int32] $output.GetPixels().GetPixel(0, 0).ToColor().R - 146) | Should -BeLessOrEqual 3
+            }
+            finally
+            {
+                $output.Dispose()
+            }
+        }
+
+        It 'Should keep the grey pixels and the grey profile in <Format> output, StripMetadata <StripMetadata>' -ForEach @(
+            foreach ($format in @('Jpeg', 'Png', 'Tiff'))
+            {
+                foreach ($strip in @($false, $true))
+                {
+                    @{ Format = $format; StripMetadata = $strip }
+                }
+            }
+        ) {
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath "out.$Format"
+
+            $result = Invoke-Conversion -Parameters @{ SourcePath = $script:grayJxl; TargetPath = $target; Format = $Format; StripMetadata = $StripMetadata }
+
+            $result.Errors | Should -BeNullOrEmpty
+            $layout = Get-TestStoredColorLayout -Path $target
+            $layout.Channels | Should -Be 'Grey'
+            $layout.ProfileSpace | Should -Be 'GRAY'
+        }
+
+        It 'Should keep the grey profile in lossless Jxl output and convert lossy Jxl output to sRGB, Quality <Quality>' -ForEach @(
+            @{ Quality = 100; Expected = 128; ProfileSpace = 'Gray' }
+            @{ Quality = 90; Expected = 146; ProfileSpace = 'sRGB' }
+        ) {
+            $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.jxl'
+
+            $result = Invoke-ProfileConversion -SourcePath $script:grayJxl -TargetPath $target -Quality $Quality
+
+            $result.Errors | Should -BeNullOrEmpty
+            $result.Verbose | Should -Not -BeLike '*does not match*'
+            [System.Math]::Abs($result.Color[0] - $Expected) | Should -BeLessOrEqual 3
+            $output = [ImageMagick.MagickImage]::new($target)
+            try
+            {
+                $output.GetColorProfile().ColorSpace | Should -Be $ProfileSpace
+            }
+            finally
+            {
+                $output.Dispose()
+            }
+        }
+    }
+
+    It 'Should store <Format> output of neutral grey pixels with an RGB profile as RGB, alpha <Alpha>, StripMetadata <StripMetadata>' -ForEach @(
+        foreach ($strip in @($false, $true))
+        {
+            @{ Format = 'Jpeg'; Alpha = $false; StripMetadata = $strip }
+            @{ Format = 'Tiff'; Alpha = $false; StripMetadata = $strip }
+            @{ Format = 'Tiff'; Alpha = $true; StripMetadata = $strip }
+        }
+    ) {
+        # ImageMagick alone would write a greyscale JPEG or TIFF with the RGB profile, which WIC rejects, so Windows shows the grey unmanaged.
+        $color = '#808080'
+        if ($Alpha)
+        {
+            $color = '#80808080'
+        }
+        $source = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'grey.png') -Format $(if ($Alpha) { 'Png32' } else { 'Png24' }) -Color $color -ColorProfile
+        $target = Join-Path -Path $script:tempDir.FullName -ChildPath "out.$Format"
+
+        $result = Invoke-Conversion -Parameters @{ SourcePath = $source.FullName; TargetPath = $target; Format = $Format; StripMetadata = $StripMetadata }
+
+        $result.Errors | Should -BeNullOrEmpty
+        $layout = Get-TestStoredColorLayout -Path $target
+        $layout.Channels | Should -Be 'RGB'
+        $layout.ProfileSpace | Should -Be 'RGB'
+        $output = [ImageMagick.MagickImage]::new($target)
+        try
+        {
+            $output.HasAlpha | Should -Be $Alpha
+            [System.Math]::Abs([System.Int32] $output.GetPixels().GetPixel(0, 0).ToColor().R - 128) | Should -BeLessOrEqual 1
+        }
+        finally
+        {
+            $output.Dispose()
+        }
+    }
+
+    It 'Should keep CMYK in <Format> output of a CMYK source' -ForEach @(
+        @{ Format = 'Jpeg' }
+        @{ Format = 'Tiff' }
+    ) {
+        $source = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'print.jpg') -Cmyk
+        $target = Join-Path -Path $script:tempDir.FullName -ChildPath "out.$Format"
+
+        $result = Invoke-Conversion -Parameters @{ SourcePath = $source.FullName; TargetPath = $target; Format = $Format }
+
+        $result.Errors | Should -BeNullOrEmpty
+        $layout = Get-TestStoredColorLayout -Path $target
+        $layout.Channels | Should -Be 'CMYK'
+        $layout.ProfileSpace | Should -Be 'CMYK'
+    }
+
+    It 'Should not write the icc:* text chunks of the CMYK profile into Png output, whose pixels are converted to sRGB' {
+        $source = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'print.jpg') -Cmyk
+        $target = Join-Path -Path $script:tempDir.FullName -ChildPath 'out.png'
+        $sourceImage = [ImageMagick.MagickImage]::new($source.FullName)
+        try
+        {
+            $sourceImage.GetAttribute('icc:description') | Should -BeLike 'U.S. Web Coated (SWOP)*' -Because 'ImageMagick reads the description of the source profile as a property'
+        }
+        finally
+        {
+            $sourceImage.Dispose()
+        }
+
+        $result = Invoke-Conversion -Parameters @{ SourcePath = $source.FullName; TargetPath = $target; Format = 'Png' }
+
+        $result.Errors | Should -BeNullOrEmpty
+        Get-PngChunkName -Path $target | Where-Object -FilterScript { $_ -like '*:icc:*' } | Should -BeNullOrEmpty
     }
 
     It 'Should write an RGB PNG that keeps the RGB profile of neutral grey pixels, alpha <Alpha>, StripMetadata <StripMetadata>' -ForEach @(

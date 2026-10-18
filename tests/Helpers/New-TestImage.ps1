@@ -11,9 +11,9 @@ function New-TestImage
 
         .DESCRIPTION
         Writes a solid -Width x -Height image in -Color with the metadata the switches ask for
-        (EXIF, an EXIF orientation, the Adobe RGB ICC profile, XMP, IPTC, a comment, CMYK
-        pixels, a camera-style EXIF thumbnail or an XMP orientation) and returns the file as
-        Get-Item returns it.
+        (EXIF, an EXIF orientation, the Adobe RGB ICC profile, grey pixels with a grey ICC
+        profile, XMP, IPTC, a comment, CMYK pixels, a camera-style EXIF thumbnail or an XMP
+        orientation) and returns the file as Get-Item returns it.
 
         .PARAMETER Path
         The file to write. The content format comes from -Format, not from the extension.
@@ -35,6 +35,11 @@ function New-TestImage
 
         .PARAMETER ColorProfile
         Adds the Adobe RGB (1998) ICC colour profile, a wide-gamut profile like Display P3.
+
+        .PARAMETER GrayColorProfile
+        Stores the pixels as grey (one channel in JPEG, PNG and TIFF) and adds the grey ICC
+        profile of Get-TestGrayColorProfile (gamma 1.8), as Photoshop greyscale exports and
+        scanned greyscale images have. Grey 128 shows as about 146 in a colour-managed viewer.
 
         .PARAMETER Xmp
         Adds an XMP profile with a dc:creator entry.
@@ -114,6 +119,10 @@ function New-TestImage
 
         [Parameter()]
         [System.Management.Automation.SwitchParameter]
+        $GrayColorProfile,
+
+        [Parameter()]
+        [System.Management.Automation.SwitchParameter]
         $Xmp,
 
         [Parameter()]
@@ -132,6 +141,12 @@ function New-TestImage
         if ($ColorProfile)
         {
             $image.SetProfile([ImageMagick.ColorProfiles]::AdobeRGB1998)
+        }
+
+        if ($GrayColorProfile)
+        {
+            $image.ColorSpace = [ImageMagick.ColorSpace]::Gray
+            $image.SetProfile((Get-TestGrayColorProfile))
         }
 
         if ($Cmyk)
@@ -645,14 +660,15 @@ function New-TestDamagedJpeg
         .DESCRIPTION
         Encodes a 320x240 gradient as JPEG and writes only the first part of it (-Keep, a
         fraction of the bytes), or the whole file without its 2-byte end marker (FF D9) with
-        -WithoutEndMarker. ImageMagick reads both with a CorruptImageWarning instead of an
-        error; the missing rows of a cut file are filled in grey.
+        -WithoutEndMarker. ImageMagick reads both with a MagickCorruptImageWarningException
+        instead of an error; the missing rows of a cut file are filled in grey. The encoding is
+        the same in every call, so -Keep 1 writes the complete file to compare with.
 
         .PARAMETER Path
         The file to write.
 
         .PARAMETER Keep
-        The fraction of the encoded bytes that is written, e.g. 0.6 for 60 %.
+        The fraction of the encoded bytes that is written, e.g. 0.6 for 60 %; 1 writes all.
 
         .PARAMETER WithoutEndMarker
         Writes the complete image data and leaves out only the end marker.
@@ -698,4 +714,249 @@ function New-TestDamagedJpeg
     [System.IO.File]::WriteAllBytes($Path, [System.Byte[]] $jpeg[0..($length - 1)])
 
     Get-Item -LiteralPath $Path -Force
+}
+
+function Get-TestStoredColorLayout
+{
+    <#
+        .SYNOPSIS
+        Reads from the bytes of an image file how it stores its pixels and which ICC profile it embeds.
+
+        .DESCRIPTION
+        Returns Channels ('Grey', 'RGB' or 'CMYK': how the file stores the pixels) and
+        ProfileSpace (the data colour space of the embedded ICC profile, 'GRAY', 'RGB' or
+        'CMYK', or $null without a profile), read from the file structure, not through
+        ImageMagick, whose readback reports grey files of some formats as sRGB. Supported:
+        JPEG (SOF components, APP2 ICC_PROFILE), PNG (IHDR colour type, iCCP), WebP (ICCP;
+        always RGB), AVIF (av1C mono_chrome, colr 'prof'), TIFF (PhotometricInterpretation,
+        tag 34675), BMP (V5 header with an embedded profile; always RGB) and GIF (ICCRGBG1
+        application extension; always RGB). JPEG XL is not supported: its colour encoding is
+        stored in a bit-packed header.
+
+        .PARAMETER Path
+        The image file to inspect; its format is detected from the first bytes.
+
+        .EXAMPLE
+        Get-TestStoredColorLayout -Path $result.FullName
+
+        Returns e.g. Channels RGB and ProfileSpace GRAY for a WebP that stores grey pixels as
+        RGB with a grey profile.
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Management.Automation.PSCustomObject])]
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [System.String]
+        $Path
+    )
+
+    $data = [System.IO.File]::ReadAllBytes($Path)
+    $ascii = [System.Text.Encoding]::ASCII
+    $bigEndian32 = {
+        param ([System.Int64] $Offset)
+
+        ([System.Int64] $data[$Offset] -shl 24) -bor ([System.Int64] $data[$Offset + 1] -shl 16) -bor ([System.Int64] $data[$Offset + 2] -shl 8) -bor [System.Int64] $data[$Offset + 3]
+    }
+    $channels = 'RGB'
+    $iccData = $null
+
+    if ($data[0] -eq 0xFF -and $data[1] -eq 0xD8)
+    {
+        $segments = [System.Collections.Generic.List[System.Byte]]::new()
+        $position = 2
+        while ($position + 4 -le $data.Length -and $data[$position] -eq 0xFF)
+        {
+            $marker = $data[$position + 1]
+            $length = ([System.Int32] $data[$position + 2] -shl 8) -bor $data[$position + 3]
+            if ($marker -eq 0xE2 -and $ascii.GetString($data, $position + 4, 11) -eq 'ICC_PROFILE')
+            {
+                # The name (12 bytes) and the sequence numbers (2 bytes) come before the profile data of each segment.
+                $segments.AddRange([System.Byte[]] $data[($position + 18)..($position + 1 + $length)])
+            }
+            elseif ($marker -in @(0xC0, 0xC1, 0xC2))
+            {
+                $channels = @{ 1 = 'Grey'; 3 = 'RGB'; 4 = 'CMYK' }[[System.Int32] $data[$position + 9]]
+            }
+            elseif ($marker -eq 0xDA)
+            {
+                break
+            }
+
+            $position += 2 + $length
+        }
+
+        if ($segments.Count -gt 0)
+        {
+            $iccData = $segments.ToArray()
+        }
+    }
+    elseif ($ascii.GetString($data, 1, 3) -eq 'PNG')
+    {
+        # The colour type is byte 25: 0 grey, 4 grey with alpha, 2 RGB, 6 RGBA, 3 a palette of RGB entries.
+        if ($data[25] -in @(0, 4))
+        {
+            $channels = 'Grey'
+        }
+
+        $position = 8
+        while ($position + 12 -le $data.Length)
+        {
+            $length = & $bigEndian32 $position
+            if ($ascii.GetString($data, $position + 4, 4) -ceq 'iCCP')
+            {
+                # The keyword, a 0 byte and the compression method byte come before the zlib stream.
+                $streamStart = [System.Array]::IndexOf($data, [System.Byte] 0, $position + 8) + 2
+                $compressed = [System.IO.MemoryStream]::new($data, $streamStart, [System.Int32] ($position + 8 + $length - $streamStart))
+                $inflater = [System.IO.Compression.ZLibStream]::new($compressed, [System.IO.Compression.CompressionMode]::Decompress)
+                $inflated = [System.IO.MemoryStream]::new()
+                $inflater.CopyTo($inflated)
+                $inflater.Dispose()
+                $iccData = $inflated.ToArray()
+            }
+
+            $position += 12 + $length
+        }
+    }
+    elseif ($ascii.GetString($data, 0, 4) -eq 'RIFF' -and $ascii.GetString($data, 8, 4) -eq 'WEBP')
+    {
+        # VP8 stores YUV colour, VP8L ARGB; WebP has no grey mode.
+        $position = 12
+        while ($position + 8 -le $data.Length)
+        {
+            $length = [System.BitConverter]::ToUInt32($data, $position + 4)
+            if ($ascii.GetString($data, $position, 4) -eq 'ICCP')
+            {
+                $iccData = [System.Byte[]] $data[($position + 8)..($position + 7 + $length)]
+            }
+
+            $position += 8 + $length + ($length % 2)
+        }
+    }
+    elseif ($ascii.GetString($data, 4, 4) -eq 'ftyp')
+    {
+        # The item properties of a HEIF file: meta (a full box) > iprp > ipco. An image with alpha has a second, monochrome av1C.
+        $findBox = {
+            param ([System.Int64] $Start, [System.Int64] $End, [System.String] $Type)
+
+            $boxPosition = $Start
+            while ($boxPosition + 8 -le $End)
+            {
+                $boxSize = & $bigEndian32 $boxPosition
+                if ($ascii.GetString($data, $boxPosition + 4, 4) -eq $Type)
+                {
+                    return [PSCustomObject] @{ Body = $boxPosition + 8; End = $boxPosition + $boxSize }
+                }
+
+                $boxPosition += $boxSize
+            }
+        }
+        $meta = & $findBox 0 $data.Length 'meta'
+        $iprp = & $findBox ($meta.Body + 4) $meta.End 'iprp'
+        $ipco = & $findBox $iprp.Body $iprp.End 'ipco'
+        $monochrome = [System.Collections.Generic.List[System.Boolean]]::new()
+        $position = $ipco.Body
+        while ($position + 8 -le $ipco.End)
+        {
+            $size = & $bigEndian32 $position
+            $type = $ascii.GetString($data, $position + 4, 4)
+            if ($type -eq 'av1C')
+            {
+                # Byte 2 of the configuration: tier, high bit depth, twelve bit, mono_chrome, ...
+                $monochrome.Add((($data[$position + 10] -shr 4) -band 1) -eq 1)
+            }
+            elseif ($type -eq 'colr' -and $ascii.GetString($data, $position + 8, 4) -in @('prof', 'rICC'))
+            {
+                $iccData = [System.Byte[]] $data[($position + 12)..($position + $size - 1)]
+            }
+
+            $position += $size
+        }
+
+        if ($monochrome.Count -gt 0 -and $monochrome -notcontains $false)
+        {
+            $channels = 'Grey'
+        }
+    }
+    elseif ($ascii.GetString($data, 0, 2) -in @('II', 'MM'))
+    {
+        $littleEndian = $data[0] -eq 0x49
+        $read = {
+            param ([System.Int64] $Offset, [System.Int32] $Size)
+
+            $value = [System.Int64] 0
+            for ($index = 0; $index -lt $Size; $index++)
+            {
+                $byteIndex = $Offset + $Size - 1 - $index
+                if ($littleEndian)
+                {
+                    $byteIndex = $Offset + $index
+                }
+
+                $value = $value -bor ([System.Int64] $data[$byteIndex] -shl (8 * $index))
+            }
+
+            $value
+        }
+        $directory = & $read 4 4
+        $entryCount = & $read $directory 2
+        for ($entry = 0; $entry -lt $entryCount; $entry++)
+        {
+            $entryOffset = $directory + 2 + 12 * $entry
+            $tag = & $read $entryOffset 2
+            if ($tag -eq 262)
+            {
+                $channels = @{ 0 = 'Grey'; 1 = 'Grey'; 2 = 'RGB'; 3 = 'RGB'; 5 = 'CMYK' }[[System.Int32] (& $read ($entryOffset + 8) 2)]
+            }
+            elseif ($tag -eq 34675)
+            {
+                $count = & $read ($entryOffset + 4) 4
+                $offset = & $read ($entryOffset + 8) 4
+                $iccData = [System.Byte[]] $data[$offset..($offset + $count - 1)]
+            }
+        }
+    }
+    elseif ($ascii.GetString($data, 0, 2) -eq 'BM')
+    {
+        # A BITMAPV5HEADER (124 bytes) names an embedded profile with CSType 'MBED' (stored as 'DEBM'), offset and size relative to the header.
+        if ([System.BitConverter]::ToUInt32($data, 14) -ge 124 -and $ascii.GetString($data, 70, 4) -eq 'DEBM')
+        {
+            $offset = 14 + [System.BitConverter]::ToUInt32($data, 126)
+            $size = [System.BitConverter]::ToUInt32($data, 130)
+            $iccData = [System.Byte[]] $data[$offset..($offset + $size - 1)]
+        }
+    }
+    elseif ($ascii.GetString($data, 0, 3) -eq 'GIF')
+    {
+        # An application extension 'ICCRGBG1' '012' whose data sub-blocks hold the profile.
+        $start = $ascii.GetString($data).IndexOf('ICCRGBG1012', [System.StringComparison]::Ordinal)
+        if ($start -ge 0)
+        {
+            $blocks = [System.Collections.Generic.List[System.Byte]]::new()
+            $position = $start + 11
+            while ($data[$position] -ne 0)
+            {
+                $blocks.AddRange([System.Byte[]] $data[($position + 1)..($position + $data[$position])])
+                $position += 1 + $data[$position]
+            }
+
+            $iccData = $blocks.ToArray()
+        }
+    }
+    else
+    {
+        throw [System.NotSupportedException]::new("Not a JPEG, PNG, WebP, AVIF, TIFF, BMP or GIF file: $Path")
+    }
+
+    $profileSpace = $null
+    if ($null -ne $iccData -and $iccData.Length -ge 20)
+    {
+        # The data colour space signature is at byte 16 of the ICC header.
+        $profileSpace = $ascii.GetString($iccData, 16, 4).TrimEnd()
+    }
+
+    [PSCustomObject] @{
+        Channels     = $channels
+        ProfileSpace = $profileSpace
+    }
 }

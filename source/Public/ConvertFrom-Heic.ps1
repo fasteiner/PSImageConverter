@@ -42,13 +42,14 @@ function ConvertFrom-Heic
         file. The folder is created if it does not exist; a folder that cannot be created or
         written to fails each file with ImageWriteFailed. Only file system paths are supported:
         a value that cannot name a folder (unknown drive, another provider, invalid characters,
-        an existing file or a link without target on the way) stops the call with one
-        terminating error.
+        an existing file or a link without target or that cannot be resolved on the way) stops
+        the call with one terminating error.
 
         .PARAMETER StripMetadata
         Removes EXIF (including the GPS location), XMP and IPTC metadata and comments from the
-        output. The ICC colour profile is kept, so photos keep their colours; lossy Jxl output
-        gets sRGB pixels instead (see Get-Help Convert-Image -Full).
+        output. The ICC colour profile is kept, so photos that carry one (as iPhone photos do)
+        keep their colours; lossy Jxl output, and grey images with a grey profile in WebP,
+        Avif, Bmp and Gif output, get sRGB pixels instead (see Get-Help Convert-Image -Full).
 
         .PARAMETER Force
         Overwrites output files that existed before the call, also read-only or hidden ones.
@@ -88,7 +89,7 @@ function ConvertFrom-Heic
         .NOTES
         See Get-Help Convert-Image -Full for the metadata each output format keeps, the handling
         of transparency, several frames and damaged files, how the preference variables of the
-        caller apply, and parallel conversions.
+        caller apply, parallel conversions and PSDrives that are not global.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '', Justification = 'ShouldProcess is called by Convert-Image, which receives -WhatIf and -Confirm through the bound parameters.')]
     [CmdletBinding(DefaultParameterSetName = 'Path', SupportsShouldProcess = $true)]

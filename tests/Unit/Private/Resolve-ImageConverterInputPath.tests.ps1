@@ -109,6 +109,18 @@ Describe 'Resolve-ImageConverterInputPath' {
         "$($result.Errors[0])" | Should -BeLike "No file matches the pattern '$([System.Management.Automation.WildcardPattern]::Escape($pattern))'. *"
     }
 
+    It 'Should say that the folder of a pattern does not exist instead of naming hidden files' {
+        $folder = Join-Path -Path $script:tempDir.FullName -ChildPath 'missing'
+        $pattern = Join-Path -Path $folder -ChildPath '*.heic'
+
+        $result = Invoke-Resolve -Parameters @{ Path = $pattern }
+
+        $result.Errors | Should -HaveCount 1
+        $result.Errors[0].FullyQualifiedErrorId | Should -BeLike 'PathNotFound*'
+        $result.Errors[0].TargetObject | Should -Be $pattern
+        "$($result.Errors[0])" | Should -Be "No file matches the pattern '$pattern': the folder '$folder' does not exist."
+    }
+
     It 'Should keep the plain message for a -Path without wildcard characters' {
         $missing = Join-Path -Path $script:tempDir.FullName -ChildPath 'missing.heic'
 

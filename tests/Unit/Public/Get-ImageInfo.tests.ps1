@@ -147,6 +147,87 @@ Describe 'Get-ImageInfo' {
             @($result).Count | Should -Be 2
         }
 
+        It 'Should write PathNotFound that explains a drive the caller created in its own scope for <Case>' -ForEach @(
+            @{ Case = '-Path'; Parameters = @{ Path = 'PsicScopeDrive:\IMG_0001.heic' }; Location = $null }
+            @{ Case = 'a -Path pattern'; Parameters = @{ Path = 'PsicScopeDrive:\*.heic' }; Location = $null }
+            @{ Case = '-LiteralPath'; Parameters = @{ LiteralPath = 'PsicScopeDrive:\IMG_0001.heic' }; Location = $null }
+            @{ Case = 'a relative path'; Parameters = @{ Path = 'IMG_0001.heic' }; Location = 'PsicScopeDrive:\' }
+        ) {
+            # Without -Scope Global the drive exists in this It block's scope only, like a drive created in a function.
+            $null = New-PSDrive -Name 'PsicScopeDrive' -PSProvider FileSystem -Root $script:tempDir.FullName
+            $errorCount = $global:Error.Count
+            if ($Location)
+            {
+                Push-Location -Path $Location
+            }
+
+            # 'PsicScopeDrive:\' on Windows, 'PsicScopeDrive:/' on Linux and macOS.
+            $currentLocation = (Get-Location).Path
+            try
+            {
+                $result = Get-ImageInfo @Parameters -ErrorAction SilentlyContinue -ErrorVariable infoError
+            }
+            finally
+            {
+                if ($Location)
+                {
+                    Pop-Location
+                }
+            }
+
+            $result | Should -BeNullOrEmpty
+            $infoError | Should -HaveCount 1
+            $global:Error.Count - $errorCount | Should -Be 1
+            $infoError[0].FullyQualifiedErrorId | Should -Be 'PathNotFound,Get-ImageInfo'
+            $infoError[0].TargetObject | Should -Be @($Parameters.Values)[0]
+            $hint = "drive 'PsicScopeDrive' was created in a scope that the PSImageConverter module cannot see (inside a function, in a script run with & or by its path, or in another module). Create the drive with New-PSDrive -Scope Global, or use the file system path; the root of the drive is '$($script:tempDir.FullName)'."
+            $expected = "Cannot resolve the path '$(@($Parameters.Values)[0])': $hint"
+            if ($Location)
+            {
+                $expected = "Cannot resolve the path '$(@($Parameters.Values)[0])', which is relative to the current location '$currentLocation': $hint"
+            }
+
+            "$($infoError[0])" | Should -Be $expected
+        }
+
+        It 'Should read a file on a global drive' {
+            $null = New-PSDrive -Name 'PsicGlobalDrive' -PSProvider FileSystem -Root $script:tempDir.FullName -Scope Global
+            try
+            {
+                $result = Get-ImageInfo -Path 'PsicGlobalDrive:\IMG_0*.heic'
+            }
+            finally
+            {
+                Remove-PSDrive -Name 'PsicGlobalDrive' -Scope Global
+            }
+
+            $result.Path | Should -Be (Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0001.heic')
+        }
+
+        It 'Should not read the files of a global drive that a drive of the caller hides' {
+            $globalRoot = New-Item -ItemType Directory -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'global')
+            Copy-Item -LiteralPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0001.heic') -Destination $globalRoot.FullName
+            $null = New-PSDrive -Name 'PsicShadowDrive' -PSProvider FileSystem -Root $globalRoot.FullName -Scope Global
+            try
+            {
+                # This It block's drive hides the global one for the test, but not for the module.
+                $null = New-PSDrive -Name 'PsicShadowDrive' -PSProvider FileSystem -Root $script:tempDir.FullName
+                $errorCount = $global:Error.Count
+
+                $result = Get-ImageInfo -Path 'PsicShadowDrive:\IMG_0001.heic' -ErrorAction SilentlyContinue -ErrorVariable infoError
+            }
+            finally
+            {
+                Remove-PSDrive -Name 'PsicShadowDrive' -Scope Global
+            }
+
+            $result | Should -BeNullOrEmpty
+            $infoError | Should -HaveCount 1
+            $global:Error.Count - $errorCount | Should -Be 1
+            $infoError[0].FullyQualifiedErrorId | Should -Be 'PathNotFound,Get-ImageInfo'
+            "$($infoError[0])" | Should -BeLike "Cannot resolve the path 'PsicShadowDrive:\IMG_0001.heic': drive 'PsicShadowDrive' was created in a scope *, so the module would use the global drive of that name, whose root is '$($globalRoot.FullName)'. *"
+        }
+
         It 'Should describe a file named by overlapping patterns once' {
             $output = Get-ImageInfo -Path (Join-Path -Path $script:tempDir.FullName -ChildPath '*.heic'), (Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_*') -Verbose 4>&1
 
@@ -307,6 +388,20 @@ Describe 'Get-ImageInfo' {
             $result.Width | Should -Be 320
             $infoWarning | Should -HaveCount 1
             "$($infoWarning[0])" | Should -Be "The image may be damaged (Premature end of JPEG file; Corrupt JPEG data: premature end of data segment): $($damaged.FullName)"
+        }
+
+        It 'Should warn once for a JPEG that lacks only its end marker' {
+            $damaged = New-TestDamagedJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'noend.jpg') -WithoutEndMarker
+            $errorCount = $global:Error.Count
+
+            $result = Get-ImageInfo -LiteralPath $damaged.FullName -WarningAction SilentlyContinue -WarningVariable infoWarning -ErrorVariable infoError
+
+            $? | Should -BeTrue
+            $infoError | Should -BeNullOrEmpty
+            $global:Error.Count - $errorCount | Should -Be 0
+            $result.Width | Should -Be 320
+            $infoWarning | Should -HaveCount 1
+            "$($infoWarning[0])" | Should -Be "The image may be damaged (Premature end of JPEG file): $($damaged.FullName)"
         }
 
         It 'Should warn about an animated GIF cut off after its first frame and describe that frame' {

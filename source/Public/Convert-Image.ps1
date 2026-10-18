@@ -21,34 +21,41 @@ function Convert-Image
 
         Errors about a file are non-terminating and processing continues with the next file;
         use -ErrorAction Stop to stop at the first one. Every error has a stable error id:
-        PathNotFound (for a wildcard pattern that matches nothing the message says that
+        PathNotFound (for a wildcard pattern that matches nothing the message names a drive or
+        folder that does not exist, a folder part that is a file, a folder part with wildcards
+        that no folder (or only a hidden one) matches or, when the folder exists, says that
         wildcards skip hidden files and, for a pattern with [ or ], that these are wildcard
-        characters), InvalidWildcardPattern (a -Path that is not a valid wildcard pattern,
-        e.g. 'a[.jpg'; use -LiteralPath), UnsupportedProvider (an input that is not a file
-        system path; one error per input, also for a pattern that matches several items of
-        another provider), TargetIsSource (the target would overwrite the source file),
-        DuplicateTarget (two sources of one call map to the same target), TargetExists,
-        ConfirmationFailed (-Confirm, or a $ConfirmPreference of the caller, asks for a
-        confirmation that the host cannot show, e.g. in pwsh -NonInteractive; use
-        -Confirm:$false), ImageReadFailed and ImageWriteFailed. The target object of an error is
-        the source file; for PathNotFound, InvalidWildcardPattern and UnsupportedProvider it is
-        the input as given. -Force never overwrites the source file or a file written earlier in
-        the same call, also not when the folder is reached through another path (a junction, a
-        symbolic link, a subst or mapped drive, a UNC path). Folders in the input (e.g. from
-        Get-ChildItem -Recurse) are skipped, and a file given more than once is converted once.
+        characters and how to match them; for a PSDrive that is not global see NOTES),
+        InvalidWildcardPattern (a -Path that is not a
+        valid wildcard pattern, e.g. 'a[.jpg'; use -LiteralPath), UnsupportedProvider (an
+        input that is not a file system path; one error per input, also for a pattern that
+        matches several items of another provider), TargetIsSource (the target would
+        overwrite the source file), DuplicateTarget (two sources of one call map to the same
+        target), TargetExists, ConfirmationFailed (-Confirm, or a $ConfirmPreference of the
+        caller, asks for a confirmation that the host cannot show, e.g. in pwsh
+        -NonInteractive; use -Confirm:$false), ImageReadFailed and ImageWriteFailed. The
+        target object of an error is the source file; for PathNotFound, InvalidWildcardPattern
+        and UnsupportedProvider it is the input as given. -Force never overwrites the source
+        file or a file written earlier in the same call, also not when the folder is reached
+        through another path (a junction, a symbolic link, a subst or mapped drive, a UNC
+        path). Folders in the input (e.g. from Get-ChildItem -Recurse) are skipped, and a file
+        given more than once is converted once.
 
         A -DestinationPath that cannot name a folder is a parameter error: it stops the whole
         call with one terminating error before any file is read, also with -WhatIf, and
-        try/catch catches it without -ErrorAction Stop. The ids are InvalidDestinationPath
-        (white space only, an unknown drive or provider, a drive-qualified path that climbs
-        above the root of its drive such as Temp:\..\x, invalid characters),
-        UnsupportedProvider (not a file system path) and DestinationNotDirectory (the path or
-        one of its parent folders is an existing file, or a junction or symbolic link whose
-        target does not exist); the target object is the -DestinationPath value as given. A
-        relative path that climbs above the root of its drive stays at the root, as in other
-        PowerShell cmdlets. A folder that does not exist yet is created when the first file is
-        written; when that fails (no permission, a read-only file system), or the folder cannot
-        be written to, each file gets an ImageWriteFailed error.
+        try/catch catches it without -ErrorAction Stop; $Error[0] holds the error record, while
+        -ErrorVariable holds the exception, whose ErrorRecord property has the record. The ids
+        are InvalidDestinationPath (white space only, an unknown drive or provider, a
+        drive-qualified path that climbs above the root of its drive such as Temp:\..\x,
+        invalid characters, on Windows also a colon after the drive such as C:\x:y, a PSDrive
+        that is not global, see NOTES), UnsupportedProvider (not a file system path) and
+        DestinationNotDirectory (the path or one of its parent folders is an existing file, a
+        junction or symbolic link whose target does not exist, or a link that cannot be
+        resolved, such as one that points to itself); the target object is the -DestinationPath value as given. A relative path that
+        climbs above the root of its drive stays at the root, as in other PowerShell cmdlets. A
+        folder that does not exist yet is created when the first file is written; when that
+        fails (no permission, a read-only file system), or the folder cannot be written to,
+        each file gets an ImageWriteFailed error.
 
         .PARAMETER Path
         One or more image files to convert. Wildcards are supported (e.g. *.heic). Accepts
@@ -71,14 +78,16 @@ function Convert-Image
         file. The folder is created if it does not exist; a folder that cannot be created or
         written to fails each file with ImageWriteFailed. Only file system paths are supported:
         a value that cannot name a folder (unknown drive, another provider, invalid characters,
-        an existing file or a link without target on the way) stops the call with one
-        terminating error.
+        an existing file or a link without target or that cannot be resolved on the way) stops
+        the call with one terminating error.
 
         .PARAMETER StripMetadata
         Removes EXIF (including the GPS location), XMP and IPTC metadata and comments from the
-        output. The ICC colour profile is kept, so photos with a wide-gamut profile (e.g.
-        Display P3) keep their colours; lossy Jxl output stores no ICC profile and gets sRGB
-        pixels instead (see NOTES).
+        output. The ICC colour profile is kept, so photos that carry one (as iPhone photos do,
+        e.g. Display P3) keep their colours; lossy Jxl output stores no ICC profile and gets
+        sRGB pixels instead, and a grey image with a grey profile gets sRGB pixels in WebP,
+        Avif, Bmp and Gif output, with the sRGB profile except in Gif. A profile that cannot
+        be applied or does not match the pixels can be left out (see NOTES).
 
         .PARAMETER Force
         Overwrites output files that existed before the call, also read-only or hidden ones.
@@ -134,17 +143,51 @@ function Convert-Image
         - Jxl: EXIF and XMP; the ICC colour profile only at -Quality 100 (lossless); no IPTC,
           no comments.
         - Tiff: XMP, IPTC, ICC colour profile and comments; no EXIF.
-        - Gif: IPTC, ICC colour profile and comments; no EXIF, no XMP.
+        - Gif: IPTC, ICC colour profile and comments; no EXIF, no XMP. Browsers ignore an ICC
+          profile in a GIF file, also an RGB one, and show its pixels as sRGB.
         - Bmp: ICC colour profile only.
+
+        The colours are kept when the source carries an ICC profile, as iPhone photos do. A
+        HEIC or AVIF source that signals its colours only through nclx/CICP (no ICC profile)
+        with primaries other than sRGB/BT.709 (e.g. Display P3 or BT.2020, also HDR with PQ or
+        HLG) is converted without colour conversion, so its colours look less saturated; Avif
+        output keeps the CICP values.
 
         Lossy Jxl output (-Quality below 100) is always sRGB: the bundled JPEG XL encoder
         stores an ICC colour profile only in lossless files. The pixels of a source with an ICC
         profile (e.g. Display P3 or Adobe RGB) are therefore converted to sRGB first, with and
         without -StripMetadata, so the photo looks the same; colours outside sRGB are clipped.
         Use -Quality 100 or Avif to keep a wide gamut. -Verbose reports the conversion. A
-        profile that viewers ignore, because it is damaged or made for other pixels (a grey
-        profile in a colour image or the other way round), is ignored here as well: the pixels
-        are written unchanged.
+        profile made for other pixels (see below) is ignored here: the pixels are written
+        unchanged. Chrome shows a lossless Jxl file whose profile describes its tone curve as a
+        table (e.g. Photoshop's 'Dot Gain 20%' grey profiles) without colour management;
+        Firefox applies such a profile, and profiles with gamma or parametric curves (Adobe
+        RGB, Display P3) work in both.
+
+        An ICC profile that the colour engine cannot apply, because it is damaged (e.g. cut
+        short) or names an unknown colour space, is left out of every output; -Verbose says
+        so. Viewers ignore it in the source, Png and lossless Jxl output could not be written
+        with it, and Chrome and Edge would not display an Avif that carries it.
+
+        Grey images with a grey ICC profile (e.g. Photoshop's 'Dot Gain 20%' or 'Gray Gamma
+        1.8', scanned greyscale) keep their grey pixels and the profile in Jpeg, Png, Tiff and
+        lossless Jxl output. WebP, Avif, Bmp and Gif store grey pixels as RGB, for which a grey
+        profile is not valid (browsers would show the WebP and Gif with wrong grey levels,
+        Chrome and Edge would not display the Avif, Firefox would show the Bmp black), so the
+        pixels are converted to sRGB first, with and without -StripMetadata; -Verbose reports
+        it. This includes a grey JPEG XL with a grey profile (e.g. lossless Jxl output of such
+        an image), which ImageMagick reads as RGB.
+
+        A profile made for other pixels is not valid: viewers ignore a grey profile in a
+        colour image, and browsers (Chrome, Edge, Firefox) apply an RGB profile to the pixels
+        of a grey JPEG, while Windows (Photos, Explorer) rejects it and shows the grey levels
+        unmanaged. Such a profile is kept, except where the output could not be written or
+        would look different with it: it is left out of lossless Jxl output and, as a grey
+        profile on colour pixels, out of Avif and Bmp output, and out of Jpeg, Png and Tiff
+        output when the colour pixels are all neutral grey (these formats store them as grey,
+        for which the grey profile would apply). Images whose pixels are all neutral grey but
+        that carry an RGB profile (e.g. a black-and-white photo exported in Adobe RGB) are
+        stored as RGB in Jpeg, Png and Tiff output, so the profile stays valid.
 
         Tiff, Gif and Bmp output cannot carry EXIF data (date taken, camera, GPS location), so
         a warning is written for every source file with EXIF data unless -StripMetadata is used.
@@ -163,8 +206,10 @@ function Convert-Image
         <path>' is written for every such source. A source that ImageMagick can read but
         reports as damaged (e.g. a truncated JPEG, whose missing part becomes grey, or an
         animated GIF cut off after its first frame, whose frames cannot be counted then) is
-        converted with the warning 'The image may be damaged (<reasons>): <path>'. Other
-        ImageMagick warnings about a source go to the verbose stream.
+        converted with the warning 'The image may be damaged (<reasons>): <path>'. A JPEG that
+        lacks only its end marker gets this warning as well, although its pixels are complete:
+        the decoder reports it like a file that is cut off. Other ImageMagick warnings about a
+        source go to the verbose stream.
 
         Like a compiled cmdlet, Convert-Image follows the preference variables of its caller
         ($WhatIfPreference, $ConfirmPreference, $ErrorActionPreference, $WarningPreference,
@@ -179,6 +224,24 @@ function Convert-Image
         earlier one, because the final move checks for an existing file and then renames,
         which is not atomic there. With -Force the later file replaces the earlier one on every
         platform. Give parallel conversions different destination folders.
+
+        PSDrives that are not global cannot be used: a script module resolves paths in its own
+        session state, which sees only the global drives (a limitation of the PowerShell
+        engine; Microsoft.PowerShell.Archive behaves the same). A drive created with New-PSDrive
+        without -Scope Global inside a function (also by a script dot-sourced there), at the
+        top of a script run by its path or with & (.\setup.ps1, & .\setup.ps1), or in another
+        module therefore fails in -Path and -LiteralPath with PathNotFound and in
+        -DestinationPath with InvalidDestinationPath, and so does a relative input path while
+        the current location is on such a drive; the message names the drive and its root.
+        Create the drive with New-PSDrive -Scope Global, or use the file system path. A drive
+        created at the prompt, in the profile, at the top level of pwsh -File or by a script
+        dot-sourced there (. .\setup.ps1) is global and works. When such a drive has the name
+        of a global drive, the module would read and write on the global drive instead, so it
+        fails the same way and the message names both roots; for a drive of another provider
+        the message says that only file system paths are supported. Files piped from
+        Get-ChildItem or Get-Item on such a drive work, because their PSPath holds the file
+        system path, and so does a relative -DestinationPath; strings and the output of
+        Resolve-Path (which has no PSPath) do not.
 
         Writing HEIC is not supported: the bundled Magick.NET build has no HEVC encoder.
     #>
@@ -225,6 +288,9 @@ function Convert-Image
         Import-ImageConverterCallerPreference -Cmdlet $PSCmdlet
 
         $formatInfo = Get-ImageConverterFormatInfo -Format $Format
+
+        # ValidateSet accepts any casing; messages and ShouldProcess show the documented spelling ('webp' -> 'WebP').
+        $Format = $formatInfo.Format
 
         if ($PSBoundParameters.ContainsKey('Quality') -and -not $formatInfo.IsLossy)
         {

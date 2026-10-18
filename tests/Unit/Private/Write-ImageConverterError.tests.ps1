@@ -22,6 +22,7 @@ Describe 'Write-ImageConverterError' {
                 function Test-ImageConverterCaller
                 {
                     [CmdletBinding()]
+                    [OutputType([System.String])]
                     param ()
 
                     Write-ImageConverterError -Cmdlet $PSCmdlet @WriteParameters

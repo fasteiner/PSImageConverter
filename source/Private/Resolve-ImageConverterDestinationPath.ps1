@@ -11,18 +11,27 @@ function Resolve-ImageConverterDestinationPath
         destination is usable. Otherwise Path is empty and ErrorId names the problem:
         InvalidDestinationPath (white space only, unknown drive or provider, a drive-qualified
         path that climbs above the root of its drive such as Temp:\..\x, a provider-qualified
-        path without a folder, invalid characters), UnsupportedProvider (a path of another
-        provider, also its root such as Env:\) or DestinationNotDirectory (the path or one of
-        its parent folders is an existing file, or a junction or symbolic link whose target does
-        not exist). A relative path that climbs above the root stays at the root, as in other
-        PowerShell cmdlets. Nothing is written or created, so -WhatIf callers stay free of side
-        effects and can report the problem before ShouldProcess.
+        path without a folder, invalid characters, on Windows also a colon after the root),
+        UnsupportedProvider (a path of another provider, also its root such as Env:\) or
+        DestinationNotDirectory (the path or one of its parent folders is an existing file, a
+        junction or symbolic link whose target does not exist, or a link that cannot be resolved,
+        such as one that points to itself). A relative path that climbs above the root stays at
+        the root, as in other PowerShell cmdlets. A drive-qualified path on a PSDrive that the
+        caller created in a scope the module cannot see (which the module would not find, or
+        resolve on a global drive of the same name) is InvalidDestinationPath with the
+        explanation of Get-ImageConverterDriveScopeHint; a relative path while the current
+        location is on such a drive resolves on the right drive. Nothing is written or created,
+        so -WhatIf callers stay free of side effects and can report the problem before
+        ShouldProcess.
+
+        .PARAMETER Cmdlet
+        The $PSCmdlet of the public cmdlet whose -DestinationPath this is, e.g. Convert-Image.
 
         .PARAMETER DestinationPath
         The destination folder as given by the user, e.g. '.\out' or 'C:\Pictures\jpg'.
 
         .EXAMPLE
-        Resolve-ImageConverterDestinationPath -DestinationPath '.\jpg'
+        Resolve-ImageConverterDestinationPath -Cmdlet $PSCmdlet -DestinationPath '.\jpg'
 
         Returns the full path of the folder jpg below the current location.
     #>
@@ -30,6 +39,10 @@ function Resolve-ImageConverterDestinationPath
     [OutputType([System.Management.Automation.PSCustomObject])]
     param
     (
+        [Parameter(Mandatory = $true)]
+        [System.Management.Automation.PSCmdlet]
+        $Cmdlet,
+
         [Parameter(Mandatory = $true)]
         [System.String]
         $DestinationPath
@@ -42,6 +55,17 @@ function Resolve-ImageConverterDestinationPath
             Path      = $null
             ErrorId   = 'InvalidDestinationPath'
             Exception = [System.ArgumentException]::new("The destination path '$DestinationPath' is not valid: it consists of white space only.")
+        }
+    }
+
+    # The module does not find a drive the caller created in its own scope, or it would write to a global drive of the same name.
+    $scopeHint = Get-ImageConverterDriveScopeHint -Cmdlet $Cmdlet -Path $DestinationPath
+    if ($null -ne $scopeHint)
+    {
+        return [PSCustomObject] @{
+            Path      = $null
+            ErrorId   = 'InvalidDestinationPath'
+            Exception = [System.ArgumentException]::new("The destination path '$DestinationPath' is not valid: $scopeHint")
         }
     }
 
@@ -78,8 +102,13 @@ function Resolve-ImageConverterDestinationPath
         }
     }
 
-    # Test-Path -IsValid writes an error for some drive-qualified paths; on the resolved file system path it only checks the characters.
-    if (-not (Test-Path -LiteralPath $resolve.Result -IsValid -ErrorAction Ignore))
+    <#
+        Test-Path -IsValid writes an error for some drive-qualified paths; on the resolved file system
+        path it only checks the characters. It accepts a colon after the root on Windows (the syntax of
+        an alternate data stream), which no folder name can contain there.
+    #>
+    $root = [System.IO.Path]::GetPathRoot($resolve.Result)
+    if (-not (Test-Path -LiteralPath $resolve.Result -IsValid -ErrorAction Ignore) -or ($IsWindows -and $resolve.Result.Substring($root.Length).Contains(':')))
     {
         return [PSCustomObject] @{
             Path      = $null
@@ -110,7 +139,21 @@ function Resolve-ImageConverterDestinationPath
             }
 
             # Null for an entry that is not a link; a drive root throws, which leaves it a folder.
-            $linkTarget = (Invoke-ImageConverterMethod -InputObject $entry -Name 'ResolveLinkTarget' -ArgumentList $true).Result
+            $link = Invoke-ImageConverterMethod -InputObject $entry -Name 'ResolveLinkTarget' -ArgumentList $true
+            $linkTarget = $link.Result
+
+            <#
+                A link that points to itself or into a loop: Linux and macOS report it as a file, Windows
+                a junction loop as a folder, which only the creation of the target folder would reveal.
+            #>
+            if ($null -ne $link.Exception -and $null -ne $entry.LinkTarget)
+            {
+                return [PSCustomObject] @{
+                    Path      = $null
+                    ErrorId   = 'DestinationNotDirectory'
+                    Exception = [System.ArgumentException]::new("The destination path '$folder' cannot be a folder: '$existing' is a link that cannot be resolved: $($link.Exception.Message)")
+                }
+            }
 
             if ($null -ne $linkTarget -and -not [System.IO.Directory]::Exists($linkTarget.FullName) -and -not [System.IO.File]::Exists($linkTarget.FullName))
             {

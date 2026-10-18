@@ -7,14 +7,24 @@ function Convert-ImageConverterImage
         .DESCRIPTION
         Reads the first frame of the source image, applies the EXIF orientation to the pixels
         (auto-orient) and updates the metadata that still describes the stored orientation,
-        converts CMYK pixels to sRGB for formats that cannot store CMYK, converts the pixels of
-        a source with an ICC profile that matches them (colour or grey) to sRGB for lossy Jxl
-        output (Quality below 100), whose encoder stores no ICC profile, optionally strips the
-        metadata but keeps the ICC colour profile, flattens transparent pixels onto white for
-        Jpeg output (CMYK white for a CMYK image), writes Tiff output of an image with alpha
-        with at least 8 bits per sample, sets the quality for lossy output formats and writes
-        the image in the requested format; Png output gets the ICC profile only as iCCP chunk,
-        and an RGB colour type when an RGB profile is kept for neutral grey pixels. The image is
+        leaves out an ICC profile that lcms cannot apply (damaged or of an unknown colour
+        space), converts CMYK pixels to sRGB for formats that cannot store CMYK, converts the
+        pixels of a source with an ICC profile that matches them (colour or grey) to sRGB for
+        lossy Jxl output (Quality below 100), whose encoder stores no ICC profile, and grey
+        pixels with a grey profile to sRGB for WebP, Avif, Bmp and Gif output, which store grey
+        pixels as RGB; a grey JPEG XL source, which ImageMagick reads as sRGB, counts as grey.
+        A profile made for other pixels (a grey profile in a colour image or the other way
+        round) is left out of lossless Jxl output, which cannot be written with it, and a grey
+        profile on colour pixels out of Avif and Bmp output, which browsers then show wrongly,
+        and out of Jpeg, Png and Tiff output when the pixels are all neutral grey, which these
+        formats store as grey. After the profile is replaced or left out, the icc:* properties
+        that describe the source profile are removed. Optionally strips the metadata but keeps
+        the ICC colour profile (the one left after these steps), flattens transparent pixels
+        onto white for Jpeg output (CMYK white for a CMYK image), writes Tiff output of an image
+        with alpha with at least 8 bits per sample, sets the quality for lossy output formats
+        and writes the image in the requested format; Png output gets the ICC profile only as
+        iCCP chunk, and Png, Jpeg and Tiff output are stored as RGB when an RGB profile is kept
+        for neutral grey pixels. The image is
         written into a temporary file in the target folder first, through a stream so
         ImageMagick does not interpret the file name, and then moved over the target, so a
         failed or stopped conversion never leaves a truncated target file or the temporary file
@@ -47,7 +57,10 @@ function Convert-ImageConverterImage
         The quality (1-100) applied to lossy output formats (Jpeg, WebP, Avif, Jxl).
 
         .PARAMETER StripMetadata
-        Removes EXIF, XMP, IPTC and comments from the output but keeps the ICC colour profile.
+        Removes EXIF, XMP, IPTC and comments from the output but keeps the ICC colour profile,
+        except where the pixels are converted to sRGB instead (lossy Jxl; grey pixels with a
+        grey profile in WebP, Avif, Bmp and Gif output) or the profile is left out (see the
+        description: a profile that cannot be applied or one made for other pixels).
 
         .PARAMETER Force
         Replaces an existing target file, also when it is read-only or hidden.
@@ -142,6 +155,33 @@ function Convert-ImageConverterImage
             Repair-ImageConverterProfileOrientation -Image $image
         }
 
+        $profileReplaced = $false
+        if ($null -ne $image.GetColorProfile())
+        {
+            <#
+                lcms cannot use a damaged profile (e.g. cut short) or one that names an unknown colour
+                space: the PNG and lossless JPEG XL encoders fail with it, and Chrome and Edge do not
+                display an Avif that carries it. Viewers ignore it in the source, so it is left out of
+                every output. A conversion of one pixel shows whether lcms can use it.
+            #>
+            $probe = $image.CloneArea(0, 0, 1, 1)
+            try
+            {
+                $probeTransform = Invoke-ImageConverterMethod -InputObject $probe -Name 'TransformColorSpace' -ArgumentList ([ImageMagick.ColorProfiles]::SRGB)
+            }
+            finally
+            {
+                $probe.Dispose()
+            }
+
+            if ($null -ne $probeTransform.Exception)
+            {
+                $image.RemoveProfile('icc')
+                $profileReplaced = $true
+                Write-Verbose -Message "The ICC colour profile cannot be applied ($($probeTransform.Exception.Message)), so it is left out of the $Format output: $SourcePath"
+            }
+        }
+
         $isSrgb = $false
         if (-not $formatInfo.SupportsCmyk -and $image.ColorSpace -eq [ImageMagick.ColorSpace]::CMYK)
         {
@@ -153,36 +193,98 @@ function Convert-ImageConverterImage
             $isSrgb = $image.TransformColorSpace([ImageMagick.ColorProfiles]::USWebCoatedSWOP, [ImageMagick.ColorProfiles]::SRGB)
         }
 
+        $profileReplaced = $profileReplaced -or $isSrgb
         $sourceProfile = $image.GetColorProfile()
-        if ($Format -eq 'Jxl' -and $Quality -lt 100 -and -not $isSrgb -and $null -ne $sourceProfile)
+        if (-not $isSrgb -and $null -ne $sourceProfile)
         {
-            <#
-                ImageMagick's JPEG XL encoder writes the ICC profile only for lossless output
-                (quality 100). Lossy output is tagged sRGB without converting the pixels, so a
-                wide-gamut photo (Adobe RGB, Display P3) would look washed out. The pixels are
-                converted to sRGB instead; colours outside sRGB are clipped. Viewers ignore a
-                profile that is damaged or made for other pixels (a grey profile in a colour image
-                or the other way round), so such pixels are written unchanged; ImageMagick would
-                turn a colour image grey through a grey profile.
-            #>
+            $grayTypes = @([ImageMagick.ColorType]::Bilevel, [ImageMagick.ColorType]::Grayscale, [ImageMagick.ColorType]::GrayscaleAlpha)
             $profileIsGray = $sourceProfile.ColorSpace -eq [ImageMagick.ColorSpace]::Gray
             $imageIsGray = $image.ColorSpace -in @([ImageMagick.ColorSpace]::Gray, [ImageMagick.ColorSpace]::LinearGray)
 
+            <#
+                ImageMagick reads a grey JPEG XL with a grey profile (as Jxl -Quality 100 output of a grey
+                source is) as sRGB with three equal channels. The format cannot carry a grey profile with
+                colour pixels, so the pixels are grey; switching to the grey colour space changes no value.
+            #>
+            if ($profileIsGray -and -not $imageIsGray -and $image.Format -eq [ImageMagick.MagickFormat]::Jxl -and $image.DetermineColorType() -in $grayTypes)
+            {
+                $image.ColorSpace = [ImageMagick.ColorSpace]::Gray
+                $imageIsGray = $true
+            }
+
+            $profileKind = 'colour'
+            if ($profileIsGray)
+            {
+                $profileKind = 'grey'
+            }
+
+            $isLossyJxl = $Format -eq 'Jxl' -and $Quality -lt 100
+
+            <#
+                ImageMagick's JPEG XL encoder writes the ICC profile only for lossless output
+                (quality 100). Lossy output is tagged sRGB without converting the pixels, so a
+                wide-gamut photo (Adobe RGB, Display P3) would look washed out. WebP, Avif, Bmp and
+                Gif store grey pixels as RGB, for which a grey profile is not valid: browsers show
+                the raw grey levels of the WebP and Gif, Chrome and Edge do not display the Avif and
+                Firefox renders the Bmp black. In both cases the pixels are converted to sRGB
+                instead; colours outside sRGB are clipped.
+            #>
+            $toSrgbReason = $null
+            if ($isLossyJxl)
+            {
+                $toSrgbReason = 'lossy Jxl output stores no ICC colour profile'
+            }
+            elseif ($profileIsGray -and -not $formatInfo.StoresGray)
+            {
+                $toSrgbReason = "$Format output stores grey pixels as RGB, for which a grey ICC colour profile is not valid"
+            }
+
             if ($profileIsGray -ne $imageIsGray)
             {
-                Write-Verbose -Message "The ICC colour profile is made for $(if ($profileIsGray) { 'grey' } else { 'colour' }) pixels and does not match the image, so the colours are written unchanged: $SourcePath"
-            }
-            else
-            {
-                $transform = Invoke-ImageConverterMethod -InputObject $image -Name 'TransformColorSpace' -ArgumentList ([ImageMagick.ColorProfiles]::SRGB)
-
-                if ($null -ne $transform.Exception)
+                <#
+                    A profile made for other pixels: viewers ignore a grey profile in a colour image, and
+                    browsers apply an RGB profile to grey JPEG pixels, which WIC rejects. ImageMagick
+                    would turn a colour image grey through a grey profile, so the pixels are written
+                    unchanged. The JPEG XL encoder cannot write such a profile losslessly
+                    (UnableToWriteImageData), and browsers do not show an Avif or Bmp whose colour pixels
+                    carry a grey profile correctly (Chrome and Edge do not display the Avif and show
+                    false colours for the Bmp, Firefox shows both grey), so the profile is left out of
+                    these outputs. The Jpeg, Png and Tiff encoders store colour pixels that are all
+                    neutral grey as grey, for which the grey profile is valid and would then be applied.
+                #>
+                if ($isLossyJxl)
                 {
-                    Write-Verbose -Message "The ICC colour profile cannot be applied ($($transform.Exception.Message)), so the colours are written unchanged: $SourcePath"
+                    Write-Verbose -Message "The ICC colour profile is made for $profileKind pixels and does not match the image, so the colours are written unchanged: $SourcePath"
                 }
-                elseif ($transform.Result)
+                elseif ($Format -eq 'Jxl' -or ($profileIsGray -and $Format -in @('Avif', 'Bmp')) -or ($profileIsGray -and $Format -in @('Jpeg', 'Png', 'Tiff') -and $image.DetermineColorType() -in $grayTypes))
                 {
-                    Write-Verbose -Message "Converted the colours to sRGB, because lossy Jxl output stores no ICC colour profile: $SourcePath"
+                    $image.RemoveProfile('icc')
+                    $profileReplaced = $true
+                    Write-Verbose -Message "The ICC colour profile is made for $profileKind pixels and does not match the image, so it is left out of the $Format output: $SourcePath"
+                }
+            }
+            elseif ($null -ne $toSrgbReason)
+            {
+                # The probe above has shown that lcms can use the profile.
+                $transform = Invoke-ImageConverterMethod -InputObject $image -Name 'TransformColorSpace' -ArgumentList ([ImageMagick.ColorProfiles]::SRGB)
+                $failure = $transform.Exception
+
+                if ($transform.Result)
+                {
+                    $profileReplaced = $true
+                    Write-Verbose -Message "Converted the colours to sRGB, because $($toSrgbReason): $SourcePath"
+                }
+            }
+        }
+
+        if ($profileReplaced)
+        {
+            # The properties read with the source profile (icc:description, icc:copyright, ...) would still name it; PNG output writes them as text chunks.
+            foreach ($attributeName in @($image.AttributeNames))
+            {
+                if ($attributeName -like 'icc:*')
+                {
+                    $image.RemoveAttribute($attributeName)
                 }
             }
         }
@@ -239,6 +341,30 @@ function Convert-ImageConverterImage
                 in memory, so raising the depth changes no pixel.
             #>
             $image.Depth = 8
+        }
+
+        $outputProfile = $image.GetColorProfile()
+        if ($Format -in @('Jpeg', 'Tiff') -and $null -ne $outputProfile -and $outputProfile.ColorSpace -eq [ImageMagick.ColorSpace]::sRGB -and $image.ColorSpace -eq [ImageMagick.ColorSpace]::sRGB)
+        {
+            <#
+                ImageMagick writes an image whose pixels are all neutral grey (a black-and-white photo
+                in Adobe RGB, say) as a greyscale JPEG or TIFF but keeps its RGB profile, a pairing that
+                WIC (Windows Photos, Explorer) rejects, so it shows the grey levels unmanaged. Stored as
+                RGB, the profile stays valid, as for Png output below. Jpeg output has no alpha here.
+                A palette PNG is read with its palette bit depth (1, 2 or 4), which RGB samples would
+                keep (a one-colour image would turn black); the pixels are 8 bit in memory.
+            #>
+            $colorType = [ImageMagick.ColorType]::TrueColor
+            if ($image.HasAlpha)
+            {
+                $colorType = [ImageMagick.ColorType]::TrueColorAlpha
+            }
+
+            $image.Settings.ColorType = $colorType
+            if ($image.Depth -lt 8)
+            {
+                $image.Depth = 8
+            }
         }
 
         if ($formatInfo.IsLossy)

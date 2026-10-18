@@ -17,10 +17,14 @@ function Get-ImageInfo
         the file, for the first three the input as given. A file that ImageMagick can read but
         reports as damaged (e.g. a truncated JPEG, whose missing part is shown grey, or an
         animated GIF cut off after its first frame) gets the warning 'The image may be damaged
-        (<reasons>): <path>'.
+        (<reasons>): <path>'. A JPEG that lacks only its end marker gets this warning as well,
+        although its pixels are complete: the decoder reports it like a file that is cut off.
+        A path on a PSDrive that is not global gets PathNotFound with a message that names the
+        drive (see the NOTES of Get-Help Convert-Image -Full).
 
         The objects can be piped into the conversion cmdlets: their PSPath property, which the
-        default view does not show, binds -LiteralPath.
+        default view does not show, binds -LiteralPath. Export-Csv, ConvertTo-Json, Format-List *
+        and Select-Object * include PSPath; Select-Object -ExcludeProperty PSPath leaves it out.
 
         .PARAMETER Path
         One or more image files to inspect. Wildcards are supported (e.g. *.heic). Accepts
@@ -49,6 +53,7 @@ function Get-ImageInfo
         .INPUTS
         System.String
         System.IO.FileInfo
+        PSImageConverter.ImageInfo
 
         Strings bind to -Path, so wildcards in them are expanded. Objects with a PSPath property
         bind to -LiteralPath: files from Get-ChildItem or Get-Item, the files returned by the
@@ -62,11 +67,12 @@ function Get-ImageInfo
         as stored), Orientation (the EXIF orientation, e.g. TopLeft or RightTop; TopLeft when
         the image has none), CameraMake, CameraModel, DateTaken (a DateTime, or empty),
         HasExif and FileSize (bytes). The hidden property PSPath holds the provider-qualified
-        path, so the object binds -LiteralPath of the conversion cmdlets and of Get-ImageInfo;
-        Format-List * and Select-Object * show it. Cmdlets that take -Path from the pipeline by
-        property name (Get-Item, Copy-Item, Remove-Item, Get-FileHash, ...) bind the Path
-        property instead and expand wildcards in it, so for a file name with [ or ] use
-        ForEach-Object { Get-Item -LiteralPath $_.Path }.
+        path, so the object binds -LiteralPath of the conversion cmdlets and of Get-ImageInfo.
+        The default view leaves it out, but Export-Csv, ConvertTo-Json, Format-List * and
+        Select-Object * include it; Select-Object -ExcludeProperty PSPath leaves it out.
+        Cmdlets that take -Path from the pipeline by property name (Get-Item, Copy-Item,
+        Remove-Item, Get-FileHash, ...) bind the Path property instead and expand wildcards in
+        it, so for a file name with [ or ] use ForEach-Object { Get-Item -LiteralPath $_.Path }.
     #>
     [CmdletBinding(DefaultParameterSetName = 'Path')]
     [OutputType('PSImageConverter.ImageInfo')]

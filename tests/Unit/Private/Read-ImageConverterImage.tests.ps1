@@ -100,7 +100,7 @@ Describe 'Read-ImageConverterImage' {
             }
         }
 
-        It 'Should return the first frame and the CorruptImageError of an animated GIF cut off after its first frame' {
+        It 'Should return the first frame and the MagickCorruptImageErrorException of an animated GIF cut off after its first frame' {
             $damaged = New-TestFrameImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'cut.gif') -FrameCount 3 -Keep 0.8
 
             $read = Read-Image -Path $damaged.FullName -CountFrames

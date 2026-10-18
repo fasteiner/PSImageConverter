@@ -11,6 +11,7 @@ BeforeAll {
             function Test-ImageConverterCaller
             {
                 [CmdletBinding()]
+                [OutputType([System.String])]
                 param ([System.String] $DestinationPath)
 
                 Assert-ImageConverterDestinationPath -Cmdlet $PSCmdlet -DestinationPath $DestinationPath

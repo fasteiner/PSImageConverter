@@ -34,12 +34,14 @@ function ConvertTo-JpegXL
         file. The folder is created if it does not exist; a folder that cannot be created or
         written to fails each file with ImageWriteFailed. Only file system paths are supported:
         a value that cannot name a folder (unknown drive, another provider, invalid characters,
-        an existing file or a link without target on the way) stops the call with one
-        terminating error.
+        an existing file or a link without target or that cannot be resolved on the way) stops
+        the call with one terminating error.
 
         .PARAMETER StripMetadata
-        Removes EXIF (including the GPS location) and XMP metadata from the output. The colours
-        are kept: at -Quality 100 with the ICC colour profile, below that as sRGB pixels.
+        Removes EXIF (including the GPS location) and XMP metadata from the output. Photos that
+        carry an ICC colour profile keep their colours: at -Quality 100 with the profile, below
+        that as sRGB pixels (see Get-Help Convert-Image -Full for sources without one and for
+        profiles that cannot be applied or do not match the pixels).
 
         .PARAMETER Force
         Overwrites output files that existed before the call, also read-only or hidden ones.
@@ -78,8 +80,8 @@ function ConvertTo-JpegXL
         an ICC profile (e.g. Display P3 or Adobe RGB) are converted to sRGB first, so the photo
         looks the same; colours outside sRGB are clipped. Use -Quality 100 or ConvertTo-Avif to
         keep a wide gamut. See Get-Help Convert-Image -Full for the other formats, sources with
-        several frames or damaged data, the preference variables of the caller and parallel
-        conversions.
+        several frames or damaged data, the preference variables of the caller, parallel
+        conversions and PSDrives that are not global.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '', Justification = 'ShouldProcess is called by Convert-Image, which receives -WhatIf and -Confirm through the bound parameters.')]
     [CmdletBinding(DefaultParameterSetName = 'Path', SupportsShouldProcess = $true)]

@@ -12,6 +12,7 @@ BeforeAll {
     $script:caller = InModuleScope -ModuleName $script:moduleName {
         function script:Test-ImageConverterCaller
         {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '', Justification = 'Stands for a public cmdlet that receives -WhatIf and -Confirm; it returns the preference values it sees instead of asking.')]
             [CmdletBinding(SupportsShouldProcess = $true)]
             param ()
 

@@ -20,6 +20,28 @@ BeforeAll {
             $image.Dispose()
         }
     }
+
+    # The colour a colour-managed viewer shows: the pixel converted from the embedded profile to sRGB; an untagged image is sRGB.
+    function Get-ViewerColor
+    {
+        param ([System.String] $Path)
+
+        $image = [ImageMagick.MagickImage]::new($Path)
+        try
+        {
+            if ($null -ne $image.GetColorProfile())
+            {
+                $null = $image.TransformColorSpace([ImageMagick.ColorProfiles]::SRGB)
+            }
+
+            $color = $image.GetPixels().GetPixel(0, 0).ToColor()
+            @([System.Int32] $color.R, [System.Int32] $color.G, [System.Int32] $color.B)
+        }
+        finally
+        {
+            $image.Dispose()
+        }
+    }
 }
 
 AfterAll {
@@ -522,6 +544,262 @@ Describe 'Convert-Image' {
         }
     }
 
+    Context 'When a path uses a PSDrive that the caller created in its own scope' {
+        BeforeEach {
+            # The module resolves paths in its own session state, which sees only the global drives.
+            $script:hint = "drive 'PsicScopeDrive' was created in a scope that the PSImageConverter module cannot see (inside a function, in a script run with & or by its path, or in another module). Create the drive with New-PSDrive -Scope Global, or use the file system path; the root of the drive is '$($script:tempDir.FullName)'."
+        }
+
+        It 'Should write PathNotFound that explains the drive for <Parameter> <Path>' -ForEach @(
+            @{ Parameter = 'Path'; Path = 'PsicScopeDrive:\IMG_0001.HEIC' }
+            @{ Parameter = 'Path'; Path = 'PsicScopeDrive:\*.HEIC' }
+            @{ Parameter = 'LiteralPath'; Path = 'PsicScopeDrive:\IMG_0001.HEIC' }
+        ) {
+            # Without -Scope Global the drive exists in this It block's scope only, like a drive created in a function.
+            $null = New-PSDrive -Name 'PsicScopeDrive' -PSProvider FileSystem -Root $script:tempDir.FullName
+            $parameters = @{ $Parameter = $Path }
+            $errorCount = $global:Error.Count
+
+            $result = Convert-Image @parameters -Format Png -ErrorAction SilentlyContinue -ErrorVariable conversionError
+
+            $result | Should -BeNullOrEmpty
+            $conversionError | Should -HaveCount 1
+            $global:Error.Count - $errorCount | Should -Be 1
+            $conversionError[0].FullyQualifiedErrorId | Should -Be 'PathNotFound,Convert-Image'
+            $conversionError[0].TargetObject | Should -Be $Path
+            "$($conversionError[0])" | Should -Be "Cannot resolve the path '$Path': $($script:hint)"
+        }
+
+        It 'Should write PathNotFound that explains the drive of the current location for the relative path <Path>' -ForEach @(
+            @{ Path = 'IMG_0001.HEIC' }
+            @{ Path = '.\*.HEIC' }
+        ) {
+            $null = New-PSDrive -Name 'PsicScopeDrive' -PSProvider FileSystem -Root $script:tempDir.FullName
+            Push-Location -Path 'PsicScopeDrive:\'
+            try
+            {
+                # 'PsicScopeDrive:\' on Windows, 'PsicScopeDrive:/' on Linux and macOS.
+                $location = (Get-Location).Path
+                $result = Convert-Image -Path $Path -Format Png -ErrorAction SilentlyContinue -ErrorVariable conversionError
+            }
+            finally
+            {
+                Pop-Location
+            }
+
+            $result | Should -BeNullOrEmpty
+            $conversionError | Should -HaveCount 1
+            $conversionError[0].FullyQualifiedErrorId | Should -Be 'PathNotFound,Convert-Image'
+            "$($conversionError[0])" | Should -Be "Cannot resolve the path '$Path', which is relative to the current location '$location': $($script:hint)"
+        }
+
+        It 'Should stop the call with one terminating InvalidDestinationPath error that explains the drive' {
+            $null = New-PSDrive -Name 'PsicScopeDrive' -PSProvider FileSystem -Root $script:tempDir.FullName
+            $errorCount = $global:Error.Count
+            $caught = $null
+
+            try
+            {
+                $null = Convert-Image -LiteralPath $script:source -Format Png -DestinationPath 'PsicScopeDrive:\out'
+            }
+            catch
+            {
+                $caught = $_
+            }
+
+            $caught.FullyQualifiedErrorId | Should -Be 'InvalidDestinationPath,Convert-Image'
+            $caught.TargetObject | Should -Be 'PsicScopeDrive:\out'
+            "$caught" | Should -Be "The destination path 'PsicScopeDrive:\out' is not valid: $($script:hint)"
+            $global:Error.Count - $errorCount | Should -Be 1
+            Join-Path -Path $script:tempDir.FullName -ChildPath 'out' | Should -Not -Exist
+        }
+
+        It 'Should resolve a relative -DestinationPath while the current location is on such a drive' {
+            $null = New-PSDrive -Name 'PsicScopeDrive' -PSProvider FileSystem -Root $script:tempDir.FullName
+            Push-Location -Path 'PsicScopeDrive:\'
+            try
+            {
+                $result = Convert-Image -LiteralPath $script:source -Format Png -DestinationPath 'out'
+            }
+            finally
+            {
+                Pop-Location
+            }
+
+            $result.FullName | Should -Be (Join-Path -Path $script:tempDir.FullName -ChildPath 'out/IMG_0001.png' | Convert-Path)
+        }
+
+        It 'Should explain a drive created at the top of a script run with &' {
+            $scriptFile = Join-Path -Path $script:tempDir.FullName -ChildPath 'drive-script.ps1'
+            Set-Content -LiteralPath $scriptFile -Value @(
+                'param ($Root)'
+                '$null = New-PSDrive -Name PsicScriptDrive -PSProvider FileSystem -Root $Root'
+                '$conversionError = $null'
+                '$null = Convert-Image -Path PsicScriptDrive:\IMG_0001.HEIC -Format Png -ErrorAction SilentlyContinue -ErrorVariable conversionError'
+                '$conversionError'
+            )
+
+            $conversionError = & $scriptFile -Root $script:tempDir.FullName
+
+            $conversionError | Should -HaveCount 1
+            $conversionError[0].FullyQualifiedErrorId | Should -Be 'PathNotFound,Convert-Image'
+            "$($conversionError[0])" | Should -BeLike "Cannot resolve the path 'PsicScriptDrive:\IMG_0001.HEIC': drive 'PsicScriptDrive' was created in a scope *"
+        }
+
+        It 'Should convert files piped from Get-ChildItem on such a drive' {
+            $null = New-PSDrive -Name 'PsicScopeDrive' -PSProvider FileSystem -Root $script:tempDir.FullName
+
+            $result = Get-ChildItem -Path 'PsicScopeDrive:\' -Filter '*.HEIC' | Convert-Image -Format Png
+
+            $result.FullName | Should -Be (Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0001.png')
+        }
+
+        It 'Should use a global drive for -Path, -LiteralPath and -DestinationPath' {
+            $null = New-PSDrive -Name 'PsicGlobalDrive' -PSProvider FileSystem -Root $script:tempDir.FullName -Scope Global
+            try
+            {
+                $fromPath = Convert-Image -Path 'PsicGlobalDrive:\*.HEIC' -Format Png -DestinationPath 'PsicGlobalDrive:\out'
+                $fromLiteralPath = Convert-Image -LiteralPath 'PsicGlobalDrive:\IMG_0001.HEIC' -Format Gif -DestinationPath 'PsicGlobalDrive:\out'
+            }
+            finally
+            {
+                Remove-PSDrive -Name 'PsicGlobalDrive' -Scope Global
+            }
+
+            $fromPath.FullName | Should -Be (Join-Path -Path $script:tempDir.FullName -ChildPath 'out/IMG_0001.png' | Convert-Path)
+            $fromLiteralPath.FullName | Should -Be (Join-Path -Path $script:tempDir.FullName -ChildPath 'out/IMG_0001.gif' | Convert-Path)
+        }
+
+        It 'Should use a drive created by a script dot-sourced in the global scope' {
+            $scriptFile = Join-Path -Path $script:tempDir.FullName -ChildPath 'drive-setup.ps1'
+            Set-Content -LiteralPath $scriptFile -Value "`$null = New-PSDrive -Name PsicDotDrive -PSProvider FileSystem -Root '$($script:tempDir.FullName)'"
+
+            # A script of a new runspace runs in its global scope, as a command typed at the prompt does.
+            $prompt = [System.Management.Automation.PowerShell]::Create()
+            try
+            {
+                $null = $prompt.AddScript("Import-Module -Name '$($script:manifestPath)'; . '$scriptFile'; Convert-Image -Path 'PsicDotDrive:\IMG_0001.HEIC' -Format Png")
+                $result = $prompt.Invoke()
+                $errors = @($prompt.Streams.Error)
+            }
+            finally
+            {
+                $prompt.Dispose()
+            }
+
+            $errors | Should -BeNullOrEmpty
+            $result.FullName | Should -Be (Join-Path -Path $script:tempDir.FullName -ChildPath 'IMG_0001.png')
+        }
+
+        It 'Should name the provider of a drive of another provider instead of suggesting -Scope Global' {
+            $null = New-PSDrive -Name 'PsicEnvDrive' -PSProvider Environment -Root ''
+
+            $result = Convert-Image -Path 'PsicEnvDrive:\PATH' -Format Png -ErrorAction SilentlyContinue -ErrorVariable conversionError
+
+            $result | Should -BeNullOrEmpty
+            $conversionError | Should -HaveCount 1
+            $conversionError[0].FullyQualifiedErrorId | Should -Be 'PathNotFound,Convert-Image'
+            "$($conversionError[0])" | Should -Be "Cannot resolve the path 'PsicEnvDrive:\PATH': drive 'PsicEnvDrive' belongs to the Environment provider. Only file system paths are supported."
+        }
+    }
+
+    Context 'When the caller''s drive hides a global drive of the same name' {
+        BeforeEach {
+            # The global drive points to another folder with a file of the same name, which must not be read or written.
+            $script:globalRoot = New-Item -ItemType Directory -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'global')
+            $script:localRoot = New-Item -ItemType Directory -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'local')
+            Copy-Item -Path $script:fixture -Destination (Join-Path -Path $script:globalRoot.FullName -ChildPath 'IMG_0001.HEIC')
+            Copy-Item -Path $script:fixture -Destination (Join-Path -Path $script:localRoot.FullName -ChildPath 'IMG_0001.HEIC')
+            $null = New-PSDrive -Name 'PsicShadowDrive' -PSProvider FileSystem -Root $script:globalRoot.FullName -Scope Global
+            $script:hint = "drive 'PsicShadowDrive' was created in a scope that the PSImageConverter module cannot see (inside a function, in a script run with & or by its path, or in another module), so the module would use the global drive of that name, whose root is '$($script:globalRoot.FullName)'. Give the drive a name that no global drive has, or use the file system path; the root of the drive is '$($script:localRoot.FullName)'."
+        }
+
+        AfterEach {
+            Remove-PSDrive -Name 'PsicShadowDrive' -Scope Global
+        }
+
+        It 'Should write PathNotFound that explains the drive for <Parameter> <Path>' -ForEach @(
+            @{ Parameter = 'Path'; Path = 'PsicShadowDrive:\IMG_0001.HEIC' }
+            @{ Parameter = 'Path'; Path = 'PsicShadowDrive:\*.HEIC' }
+            @{ Parameter = 'LiteralPath'; Path = 'PsicShadowDrive:\IMG_0001.HEIC' }
+        ) {
+            # This It block's drive hides the global one for the test, but not for the module.
+            $null = New-PSDrive -Name 'PsicShadowDrive' -PSProvider FileSystem -Root $script:localRoot.FullName
+            $parameters = @{ $Parameter = $Path }
+            $errorCount = $global:Error.Count
+
+            $result = Convert-Image @parameters -Format Png -DestinationPath $script:tempDir.FullName -ErrorAction SilentlyContinue -ErrorVariable conversionError
+
+            $result | Should -BeNullOrEmpty
+            $conversionError | Should -HaveCount 1
+            $global:Error.Count - $errorCount | Should -Be 1
+            $conversionError[0].FullyQualifiedErrorId | Should -Be 'PathNotFound,Convert-Image'
+            $conversionError[0].TargetObject | Should -Be $Path
+            "$($conversionError[0])" | Should -Be "Cannot resolve the path '$Path': $($script:hint)"
+        }
+
+        It 'Should write PathNotFound that explains the drive of the current location for a relative path' {
+            $null = New-PSDrive -Name 'PsicShadowDrive' -PSProvider FileSystem -Root $script:localRoot.FullName
+            Push-Location -Path 'PsicShadowDrive:\'
+            try
+            {
+                $location = (Get-Location).Path
+                $result = Convert-Image -Path 'IMG_0001.HEIC' -Format Png -DestinationPath $script:tempDir.FullName -ErrorAction SilentlyContinue -ErrorVariable conversionError
+            }
+            finally
+            {
+                Pop-Location
+            }
+
+            $result | Should -BeNullOrEmpty
+            $conversionError | Should -HaveCount 1
+            "$($conversionError[0])" | Should -Be "Cannot resolve the path 'IMG_0001.HEIC', which is relative to the current location '$location': $($script:hint)"
+        }
+
+        It 'Should stop the call with one terminating InvalidDestinationPath error and write nothing to the global drive' {
+            $null = New-PSDrive -Name 'PsicShadowDrive' -PSProvider FileSystem -Root $script:localRoot.FullName
+            $source = Join-Path -Path $script:localRoot.FullName -ChildPath 'IMG_0001.HEIC'
+            $caught = $null
+
+            try
+            {
+                $null = Convert-Image -LiteralPath $source -Format Png -DestinationPath 'PsicShadowDrive:\out' -Force
+            }
+            catch
+            {
+                $caught = $_
+            }
+
+            $caught.FullyQualifiedErrorId | Should -Be 'InvalidDestinationPath,Convert-Image'
+            "$caught" | Should -Be "The destination path 'PsicShadowDrive:\out' is not valid: $($script:hint)"
+            Join-Path -Path $script:globalRoot.FullName -ChildPath 'out' | Should -Not -Exist
+            Join-Path -Path $script:localRoot.FullName -ChildPath 'out' | Should -Not -Exist
+        }
+
+        It 'Should resolve a relative -DestinationPath on the caller''s drive' {
+            $null = New-PSDrive -Name 'PsicShadowDrive' -PSProvider FileSystem -Root $script:localRoot.FullName
+            Push-Location -Path 'PsicShadowDrive:\'
+            try
+            {
+                $result = Convert-Image -LiteralPath $script:source -Format Png -DestinationPath 'out'
+            }
+            finally
+            {
+                Pop-Location
+            }
+
+            $result.FullName | Should -Be (Join-Path -Path $script:localRoot.FullName -ChildPath 'out/IMG_0001.png' | Convert-Path)
+        }
+
+        It 'Should convert the caller''s files piped from Get-ChildItem' {
+            $null = New-PSDrive -Name 'PsicShadowDrive' -PSProvider FileSystem -Root $script:localRoot.FullName
+
+            $result = Get-ChildItem -Path 'PsicShadowDrive:\' -Filter '*.HEIC' | Convert-Image -Format Png
+
+            $result.FullName | Should -Be (Join-Path -Path $script:localRoot.FullName -ChildPath 'IMG_0001.png')
+        }
+    }
+
     Context 'When using -WhatIf' {
         It 'Should neither write the file nor create the destination folder' {
             $destination = Join-Path -Path $script:tempDir.FullName -ChildPath 'whatif'
@@ -533,11 +811,29 @@ Describe 'Convert-Image' {
         }
     }
 
+    Context 'When -Format is given in another casing' {
+        It 'Should name the format as documented in the ShouldProcess message' {
+            $output = Convert-Image -LiteralPath $script:source -Format 'webp' -Verbose 4>&1
+            $verbose = @($output | Where-Object -FilterScript { $_ -is [System.Management.Automation.VerboseRecord] } | ForEach-Object -Process { "$_" })
+
+            ($output | Where-Object -FilterScript { $_ -is [System.IO.FileInfo] }).Name | Should -BeExactly 'IMG_0001.webp'
+            @($verbose | Where-Object -FilterScript { $_ -clike "*Convert to WebP '*" }) | Should -HaveCount 1
+            @($verbose | Where-Object -FilterScript { $_ -clike '*webp output*' -or $_ -clike '*Convert to webp*' }) | Should -BeNullOrEmpty
+        }
+
+        It 'Should name the format as documented when -Quality is ignored' {
+            $verbose = Convert-Image -LiteralPath $script:source -Format 'PNG' -Quality 50 -WhatIf -Verbose 4>&1 | ForEach-Object -Process { "$_" }
+
+            $verbose -ccontains '-Quality is ignored for Png output, which is not a lossy format.' | Should -BeTrue
+        }
+    }
+
     Context 'When the caller sets preference variables in its own scope' {
         BeforeAll {
             # A user's function: -WhatIf sets $WhatIfPreference in its own scope, which a module function does not see by itself.
             function Invoke-UserFunction
             {
+                [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '', Justification = 'A user function that only receives -WhatIf and -Confirm; whether the cmdlet it calls follows them is what the tests check.')]
                 [CmdletBinding(SupportsShouldProcess = $true)]
                 param ([System.Collections.Hashtable] $Parameters)
 
@@ -1170,19 +1466,40 @@ Describe 'Convert-Image' {
             @{ Case = 'a NUL character'; ErrorId = 'InvalidDestinationPath'; Destination = 'nul-character'; WhatIf = $false }
             @{ Case = 'white space only'; ErrorId = 'InvalidDestinationPath'; Destination = ' '; WhatIf = $false }
             @{ Case = 'a provider-qualified path without a folder'; ErrorId = 'InvalidDestinationPath'; Destination = 'Microsoft.PowerShell.Core\FileSystem::'; WhatIf = $true }
+            @{ Case = 'a link that points to itself'; ErrorId = 'DestinationNotDirectory'; Destination = 'loop'; WhatIf = $true }
+            @{ Case = 'a folder below a link that points to itself'; ErrorId = 'DestinationNotDirectory'; Destination = 'below-loop'; WhatIf = $false }
             if ($IsWindows)
             {
                 @{ Case = 'a character Windows does not allow'; ErrorId = 'InvalidDestinationPath'; Destination = 'pipe-character'; WhatIf = $false }
+                @{ Case = 'a colon in a folder below the root'; ErrorId = 'InvalidDestinationPath'; Destination = 'colon'; WhatIf = $false }
+                @{ Case = 'a colon in a folder below the root'; ErrorId = 'InvalidDestinationPath'; Destination = 'colon'; WhatIf = $true }
             }
         ) {
+            # A junction loop on Windows needs no privilege; Linux and macOS report a symbolic link loop as a file.
+            $loop = Join-Path -Path $script:tempDir.FullName -ChildPath 'loop'
+            if ($Destination -like '*loop')
+            {
+                if ($IsWindows)
+                {
+                    $null = cmd.exe /c mklink /J $loop $loop
+                }
+                else
+                {
+                    $null = [System.IO.File]::CreateSymbolicLink($loop, $loop)
+                }
+            }
+
             $destinationPath = switch ($Destination)
             {
                 'file' { $script:file }
                 'below-file' { Join-Path -Path $script:file -ChildPath 'sub' }
                 'dangling' { $script:danglingLink }
                 'below-dangling' { Join-Path -Path $script:danglingLink -ChildPath 'sub' }
+                'loop' { $loop }
+                'below-loop' { Join-Path -Path $loop -ChildPath 'sub' }
                 'nul-character' { Join-Path -Path $script:tempDir.FullName -ChildPath "a`0b" }
                 'pipe-character' { Join-Path -Path $script:tempDir.FullName -ChildPath 'a|b' }
+                'colon' { Join-Path -Path $script:tempDir.FullName -ChildPath 'partial/x:stream' }
                 default { $Destination }
             }
             $errorCount = $global:Error.Count
@@ -1204,8 +1521,12 @@ Describe 'Convert-Image' {
             $caught.TargetObject | Should -Be $destinationPath
             $global:Error.Count - $errorCount | Should -Be 1
             $conversionError | Should -HaveCount 1
+            # For a terminating error -ErrorVariable holds the exception; its ErrorRecord is a copy of the record.
+            $conversionError[0] | Should -BeOfType [System.Management.Automation.CmdletInvocationException]
+            $conversionError[0].ErrorRecord.FullyQualifiedErrorId | Should -Be $caught.FullyQualifiedErrorId
+            $conversionError[0].ErrorRecord.TargetObject | Should -Be $destinationPath
             $result | Should -BeNullOrEmpty
-            Get-ChildItem -Path $script:tempDir.FullName -Recurse -Force | Where-Object -FilterScript { $_.Extension -ne '.HEIC' -and $_.Name -notin @('file.txt', 'dangling') } | Should -BeNullOrEmpty
+            Get-ChildItem -Path $script:tempDir.FullName -Recurse -Force -Attributes !ReparsePoint | Where-Object -FilterScript { $_.Extension -ne '.HEIC' -and $_.Name -notin @('file.txt') } | Should -BeNullOrEmpty
             Get-Content -Path $script:file | Should -Be 'x'
         }
 
@@ -1297,7 +1618,8 @@ Describe 'Convert-Image' {
             $result = Convert-Image -LiteralPath $percentSource -Format Jpeg -ErrorVariable conversionError -WarningVariable conversionWarning
 
             $conversionError | Should -BeNullOrEmpty
-            $conversionWarning | Should -BeNullOrEmpty -Because 'the frames are counted in the file itself, not in a file sequence'
+            # A single-frame source cannot show whether the name was taken as a file sequence; the test with 3-frame sources named seq%03d.gif and a%x.gif does.
+            $conversionWarning | Should -BeNullOrEmpty -Because 'a single-frame source that is read completely gets no frame or damage warning'
             $result.Name | Should -Be "$Name.jpg"
             Get-ChildItem -LiteralPath $script:tempDir.FullName -Force -Filter '*.tmp' | Should -BeNullOrEmpty
         }
@@ -1418,28 +1740,6 @@ Describe 'Convert-Image' {
 
     Context 'When the source has a wide-gamut ICC profile' {
         BeforeAll {
-            # The colour a colour-managed viewer shows: the pixel converted from the embedded profile to sRGB; an untagged image is sRGB.
-            function Get-ViewerColor
-            {
-                param ([System.String] $Path)
-
-                $image = [ImageMagick.MagickImage]::new($Path)
-                try
-                {
-                    if ($null -ne $image.GetColorProfile())
-                    {
-                        $null = $image.TransformColorSpace([ImageMagick.ColorProfiles]::SRGB)
-                    }
-
-                    $color = $image.GetPixels().GetPixel(0, 0).ToColor()
-                    @([System.Int32] $color.R, [System.Int32] $color.G, [System.Int32] $color.B)
-                }
-                finally
-                {
-                    $image.Dispose()
-                }
-            }
-
             function Get-ColorProfileByte
             {
                 param ([System.String] $Path)
@@ -1463,8 +1763,12 @@ Describe 'Convert-Image' {
         }
 
         BeforeEach {
-            # Adobe RGB #4080C0 shows as about #0081C4; read as sRGB it would show as #4080C0, 64 levels more red.
-            $script:wideSource = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'wide.png') -Format Png -ColorProfile -Exif -Xmp
+            <#
+                Adobe RGB #6496C8 shows as about #4297CB; read as sRGB it would show as #6496C8, 34 levels
+                more red. A colour without channels near 0 or 255: lossy Jxl moves such channels of
+                saturated colours by 30 levels and more (encoder noise), far beyond the tolerance.
+            #>
+            $script:wideSource = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'wide.png') -Format Png -Color '#6496C8' -ColorProfile -Exif -Xmp
             $script:sourceColor = Get-ViewerColor -Path $script:wideSource.FullName
         }
 
@@ -1479,7 +1783,7 @@ Describe 'Convert-Image' {
         ) {
             $result = Convert-Image -LiteralPath $script:wideSource.FullName -Format $Format -StripMetadata:$StripMetadata -DestinationPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out') -WarningAction SilentlyContinue
 
-            $script:sourceColor[0] | Should -BeLessOrEqual 8 -Because 'the fixture must differ visibly from its raw values'
+            100 - $script:sourceColor[0] | Should -BeGreaterOrEqual 24 -Because 'the fixture must differ visibly from its raw values'
             $actual = Get-ViewerColor -Path $result.FullName
             foreach ($channel in 0..2)
             {
@@ -1545,6 +1849,75 @@ Describe 'Convert-Image' {
             $verbose = Convert-Image -LiteralPath $script:source -Format Jxl -Verbose 4>&1 | Where-Object -FilterScript { $_ -is [System.Management.Automation.VerboseRecord] }
 
             "$verbose" | Should -Not -Match 'sRGB'
+        }
+    }
+
+    Context 'When the source is grey with a grey ICC profile' {
+        BeforeEach {
+            # A greyscale JPEG as Photoshop exports it: one channel, grey 128 with a gamma 1.8 profile, shown as about 146.
+            $script:greySource = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'grey.jpg') -Color '#808080' -GrayColorProfile
+            $script:greyColor = Get-ViewerColor -Path $script:greySource.FullName
+        }
+
+        It 'Should show the grey of the source and store no grey profile on RGB pixels in <Format> output, Quality <Quality>, StripMetadata <StripMetadata>' -ForEach @(
+            foreach ($format in @('Jpeg', 'Png', 'WebP', 'Avif', 'Jxl', 'Tiff', 'Bmp', 'Gif'))
+            {
+                foreach ($strip in @($false, $true))
+                {
+                    @{ Format = $format; Quality = 90; StripMetadata = $strip }
+                }
+            }
+            @{ Format = 'Jxl'; Quality = 100; StripMetadata = $false }
+            @{ Format = 'Jxl'; Quality = 100; StripMetadata = $true }
+        ) {
+            $result = Convert-Image -LiteralPath $script:greySource.FullName -Format $Format -Quality $Quality -StripMetadata:$StripMetadata -DestinationPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out') -ErrorVariable conversionError
+
+            $conversionError | Should -BeNullOrEmpty
+            $script:greyColor[0] - 128 | Should -BeGreaterOrEqual 12 -Because 'the fixture must differ visibly from its raw values'
+            if ($Format -ne 'Jxl')
+            {
+                # Read from the file structure: ImageMagick reports some grey files as sRGB. JPEG XL keeps grey as grey at Quality 100 (kGrey) and stores no profile below.
+                $layout = Get-TestStoredColorLayout -Path $result.FullName
+                if ($layout.ProfileSpace -eq 'GRAY')
+                {
+                    $layout.Channels | Should -Be 'Grey' -Because "a grey profile is valid only for grey pixels, and $Format output stores them as $($layout.Channels)"
+                }
+            }
+
+            $actual = Get-ViewerColor -Path $result.FullName
+            foreach ($channel in 0..2)
+            {
+                [System.Math]::Abs($actual[$channel] - $script:greyColor[$channel]) | Should -BeLessOrEqual 3 -Because "channel $channel shows $($actual[$channel]), the source shows $($script:greyColor[$channel])"
+            }
+        }
+
+        It 'Should convert the grey to sRGB for <Format> output, which stores grey pixels as RGB' -ForEach @(
+            @{ Format = 'WebP' }
+            @{ Format = 'Avif' }
+            @{ Format = 'Bmp' }
+            @{ Format = 'Gif' }
+        ) {
+            $result = Convert-Image -LiteralPath $script:greySource.FullName -Format $Format -Verbose 4>&1
+
+            $file = $result | Where-Object -FilterScript { $_ -is [System.IO.FileInfo] }
+            "$($result | Where-Object -FilterScript { $_ -is [System.Management.Automation.VerboseRecord] })" | Should -BeLike "*Converted the colours to sRGB, because $Format output stores grey pixels as RGB, for which a grey ICC colour profile is not valid: $($script:greySource.FullName)*"
+            $layout = Get-TestStoredColorLayout -Path $file.FullName
+            $layout.Channels | Should -Be 'RGB'
+            $layout.ProfileSpace | Should -BeIn @('RGB', $null)
+        }
+
+        It 'Should keep the grey pixels and the grey profile in <Format> output' -ForEach @(
+            @{ Format = 'Jpeg' }
+            @{ Format = 'Png' }
+            @{ Format = 'Tiff' }
+        ) {
+            $result = Convert-Image -LiteralPath $script:greySource.FullName -Format $Format -DestinationPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out') -Verbose 4>&1
+
+            $file = $result | Where-Object -FilterScript { $_ -is [System.IO.FileInfo] }
+            "$($result | Where-Object -FilterScript { $_ -is [System.Management.Automation.VerboseRecord] })" | Should -Not -Match 'sRGB'
+            $layout = Get-TestStoredColorLayout -Path $file.FullName
+            $layout.Channels | Should -Be 'Grey'
+            $layout.ProfileSpace | Should -Be 'GRAY'
         }
     }
 
@@ -1805,6 +2178,34 @@ Describe 'Convert-Image' {
             $result.Name | Should -Be 'cut.png'
             $damageWarning | Should -HaveCount 1
             "$($damageWarning[0])" | Should -Be "The image may be damaged (Premature end of JPEG file; Corrupt JPEG data: premature end of data segment): $($damaged.FullName)"
+        }
+
+        It 'Should warn once for a JPEG that lacks only its end marker and write the pixels of the complete file' {
+            # libjpeg reports a missing end marker like a cut file; a progressive JPEG cut at a scan boundary, whose pixels are degraded, reads the same way.
+            $complete = New-TestDamagedJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'complete.jpg') -Keep 1
+            $damaged = New-TestDamagedJpeg -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'noend.jpg') -WithoutEndMarker
+            $expected = Convert-Image -LiteralPath $complete.FullName -Format Png -WarningVariable completeWarning
+            $errorCount = $global:Error.Count
+
+            $result = Convert-Image -LiteralPath $damaged.FullName -Format Png -WarningAction SilentlyContinue -WarningVariable damageWarning -ErrorVariable damageError
+
+            $? | Should -BeTrue
+            $damageError | Should -BeNullOrEmpty
+            $global:Error.Count - $errorCount | Should -Be 0
+            $completeWarning | Should -BeNullOrEmpty -Because 'the complete file is intact'
+            $damageWarning | Should -HaveCount 1
+            "$($damageWarning[0])" | Should -Be "The image may be damaged (Premature end of JPEG file): $($damaged.FullName)"
+            $expectedImage = [ImageMagick.MagickImage]::new($expected.FullName)
+            $actualImage = [ImageMagick.MagickImage]::new($result.FullName)
+            try
+            {
+                $actualImage.Compare($expectedImage, [ImageMagick.ErrorMetric]::Absolute) | Should -Be 0 -Because 'the pixels are complete'
+            }
+            finally
+            {
+                $expectedImage.Dispose()
+                $actualImage.Dispose()
+            }
         }
 
         It 'Should warn about an animated GIF cut off after its first frame and convert that frame' {

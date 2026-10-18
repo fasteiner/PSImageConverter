@@ -10,7 +10,8 @@ function Assert-ImageConverterDestinationPath
         that cannot name a folder fails every file, so it is a parameter error and stops the
         whole call with one terminating error through the cmdlet passed in -Cmdlet instead of
         one error per source: InvalidDestinationPath (white space only, unknown drive or provider, a
-        drive-qualified path that climbs above the root of its drive, invalid characters),
+        drive-qualified path that climbs above the root of its drive, invalid characters, a
+        drive the caller created in a scope the module cannot see),
         UnsupportedProvider (not a file system path) or DestinationNotDirectory (the path or one
         of its parent folders is an existing file, or a link whose target does not exist). The
         target object of the error is the -DestinationPath value as given. A folder that does not
@@ -48,7 +49,7 @@ function Assert-ImageConverterDestinationPath
         return
     }
 
-    $destination = Resolve-ImageConverterDestinationPath -DestinationPath $DestinationPath
+    $destination = Resolve-ImageConverterDestinationPath -Cmdlet $Cmdlet -DestinationPath $DestinationPath
 
     if ($null -ne $destination.ErrorId)
     {

@@ -38,40 +38,7 @@ jobs:
           versionSpec: "5.x"
 
       - name: Build and test
-        run: |
-          & ./build.ps1 -ResolveDependency -Tasks build, test *>&1 | Tee-Object -FilePath build.log
-          exit $LASTEXITCODE
-
-      - name: Report failures as annotations
-        if: failure()
-        shell: pwsh
-        run: |
-          $results = Get-ChildItem -Path output/testResults -Filter *.xml -Recurse -ErrorAction SilentlyContinue
-          foreach ($file in $results)
-          {
-              [xml] $xml = Get-Content -Path $file.FullName -Raw
-              $failed = $xml.SelectNodes('//test-case[@result="Failure" or @result="Failed"]') | Select-Object -First 15
-              foreach ($case in $failed)
-              {
-                  $message = ("$($case.name): $($case.failure.message)" -replace '%', '%25' -replace "`r", '' -replace "`n", '%0A')
-                  Write-Output "::error title=Test failed::$message"
-              }
-          }
-          if (Test-Path -Path build.log)
-          {
-              $esc = [char] 27
-              $lines = Get-Content -Path build.log | ForEach-Object -Process { $_ -replace "$esc\[[0-9;]*m", '' }
-              $hits = for ($i = 0; $i -lt $lines.Count; $i++)
-              {
-                  if ($lines[$i] -match '\[-\]|Exception|Error:|Expected|failed|at <ScriptBlock>|, .*\.ps1:\d+')
-                  {
-                      $lines[$i]
-                  }
-              }
-              $text = ($hits | Select-Object -Unique | Select-Object -First 70) -join "`n"
-              $text = $text -replace '%', '%25' -replace "`r", '' -replace "`n", '%0A'
-              Write-Output "::error title=Pester errors::$text"
-          }
+        run: ./build.ps1 -ResolveDependency -Tasks build, test
 
       - name: Upload test results
         if: always()

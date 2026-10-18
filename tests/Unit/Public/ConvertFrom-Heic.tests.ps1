@@ -1,3 +1,6 @@
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidGlobalVars', '', Justification = 'The -ErrorVariable, -WarningVariable and -OutVariable +name tests append to a global variable, as the interactive prompt and pwsh -File scripts do.')]
+param ()
+
 BeforeAll {
     $script:moduleName = 'PSImageConverter'
     Import-Module -Name $script:moduleName
@@ -374,6 +377,14 @@ Describe 'ConvertFrom-Heic' {
             $conversionWarning | Should -HaveCount 1
             "$($conversionWarning[0])" | Should -Match 'EXIF metadata'
         }
+
+        It 'Should name a -Format given in another casing as documented' {
+            $output = ConvertFrom-Heic -Path $script:source -Format 'webp' -Verbose 4>&1
+            $verbose = @($output | Where-Object -FilterScript { $_ -is [System.Management.Automation.VerboseRecord] } | ForEach-Object -Process { "$_" })
+
+            ($output | Where-Object -FilterScript { $_ -is [System.IO.FileInfo] }).Name | Should -BeExactly 'IMG_0001.webp'
+            @($verbose | Where-Object -FilterScript { $_ -clike "*Convert to WebP '*" }) | Should -HaveCount 1
+        }
     }
 
     Context 'When a confirmation cannot be asked' {
@@ -479,6 +490,7 @@ Describe 'ConvertFrom-Heic' {
         BeforeAll {
             function Invoke-UserFunction
             {
+                [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '', Justification = 'A user function that only receives -WhatIf and -Confirm; whether the cmdlet it calls follows them is what the tests check.')]
                 [CmdletBinding(SupportsShouldProcess = $true)]
                 param ([System.Collections.Hashtable] $Parameters)
 
@@ -536,6 +548,7 @@ Describe 'ConvertFrom-Heic' {
             # An alias wins over every function of the same name, in every scope.
             function global:Invoke-PsicHijack
             {
+                [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Arguments', Justification = 'Takes every argument the wrapper passes to Convert-Image, so the call binds; the values do not matter.')]
                 param ([Parameter(ValueFromRemainingArguments = $true)] $Arguments)
 
                 'hijacked'
@@ -552,6 +565,111 @@ Describe 'ConvertFrom-Heic' {
 
             $result | Should -BeOfType [System.IO.FileInfo]
             $result.Name | Should -Be 'IMG_0001.jpg'
+        }
+    }
+
+    Context 'When a path uses a PSDrive that the caller created in its own scope' {
+        BeforeEach {
+            # The module resolves paths in its own session state, which sees only the global drives.
+            $script:hint = "drive 'PsicScopeDrive' was created in a scope that the PSImageConverter module cannot see (inside a function, in a script run with & or by its path, or in another module). Create the drive with New-PSDrive -Scope Global, or use the file system path; the root of the drive is '$($script:tempDir.FullName)'."
+        }
+
+        It 'Should write PathNotFound of ConvertFrom-Heic that explains the drive for <Case>' -ForEach @(
+            @{ Case = '-Path'; Parameters = @{ Path = 'PsicScopeDrive:\IMG_0001.HEIC' }; Location = $null }
+            @{ Case = '-LiteralPath'; Parameters = @{ LiteralPath = 'PsicScopeDrive:\IMG_0001.HEIC' }; Location = $null }
+            @{ Case = 'a relative path'; Parameters = @{ Path = 'IMG_0001.HEIC' }; Location = 'PsicScopeDrive:\' }
+        ) {
+            # Without -Scope Global the drive exists in this It block's scope only, like a drive created in a function.
+            $null = New-PSDrive -Name 'PsicScopeDrive' -PSProvider FileSystem -Root $script:tempDir.FullName
+            $errorCount = $global:Error.Count
+            if ($Location)
+            {
+                Push-Location -Path $Location
+            }
+
+            # 'PsicScopeDrive:\' on Windows, 'PsicScopeDrive:/' on Linux and macOS.
+            $currentLocation = (Get-Location).Path
+            try
+            {
+                $result = ConvertFrom-Heic @Parameters -ErrorAction SilentlyContinue -ErrorVariable conversionError
+            }
+            finally
+            {
+                if ($Location)
+                {
+                    Pop-Location
+                }
+            }
+
+            $result | Should -BeNullOrEmpty
+            $conversionError | Should -HaveCount 1
+            $global:Error.Count - $errorCount | Should -Be 1
+            $conversionError[0].FullyQualifiedErrorId | Should -Be 'PathNotFound,ConvertFrom-Heic'
+            $conversionError[0].TargetObject | Should -Be @($Parameters.Values)[0]
+            $expected = "Cannot resolve the path '$(@($Parameters.Values)[0])': $($script:hint)"
+            if ($Location)
+            {
+                $expected = "Cannot resolve the path '$(@($Parameters.Values)[0])', which is relative to the current location '$currentLocation': $($script:hint)"
+            }
+            "$($conversionError[0])" | Should -Be $expected
+
+        }
+
+        It 'Should stop the call with one terminating InvalidDestinationPath error of ConvertFrom-Heic that explains the drive' {
+            $null = New-PSDrive -Name 'PsicScopeDrive' -PSProvider FileSystem -Root $script:tempDir.FullName
+            $errorCount = $global:Error.Count
+            $caught = $null
+
+            try
+            {
+                $null = ConvertFrom-Heic -LiteralPath $script:source -DestinationPath 'PsicScopeDrive:\out'
+            }
+            catch
+            {
+                $caught = $_
+            }
+
+            $caught.FullyQualifiedErrorId | Should -Be 'InvalidDestinationPath,ConvertFrom-Heic'
+            $caught.TargetObject | Should -Be 'PsicScopeDrive:\out'
+            "$caught" | Should -Be "The destination path 'PsicScopeDrive:\out' is not valid: $($script:hint)"
+            $global:Error.Count - $errorCount | Should -Be 1
+        }
+
+        It 'Should use a global drive for -Path and -DestinationPath' {
+            $null = New-PSDrive -Name 'PsicGlobalDrive' -PSProvider FileSystem -Root $script:tempDir.FullName -Scope Global
+            try
+            {
+                $result = ConvertFrom-Heic -Path 'PsicGlobalDrive:\IMG_0001.HEIC' -DestinationPath 'PsicGlobalDrive:\out'
+            }
+            finally
+            {
+                Remove-PSDrive -Name 'PsicGlobalDrive' -Scope Global
+            }
+
+            $result.DirectoryName | Should -Be (Join-Path -Path $script:tempDir.FullName -ChildPath 'out' | Convert-Path)
+        }
+
+        It 'Should not convert the files of a global drive that a drive of the caller hides' {
+            $globalRoot = New-Item -ItemType Directory -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'global')
+            Copy-Item -LiteralPath $script:source -Destination $globalRoot.FullName
+            $null = New-PSDrive -Name 'PsicShadowDrive' -PSProvider FileSystem -Root $globalRoot.FullName -Scope Global
+            try
+            {
+                # This It block's drive hides the global one for the test, but not for the module.
+                $null = New-PSDrive -Name 'PsicShadowDrive' -PSProvider FileSystem -Root $script:tempDir.FullName
+
+                $result = ConvertFrom-Heic -Path 'PsicShadowDrive:\IMG_0001.HEIC' -ErrorAction SilentlyContinue -ErrorVariable conversionError
+            }
+            finally
+            {
+                Remove-PSDrive -Name 'PsicShadowDrive' -Scope Global
+            }
+
+            $result | Should -BeNullOrEmpty
+            $conversionError | Should -HaveCount 1
+            $conversionError[0].FullyQualifiedErrorId | Should -Be 'PathNotFound,ConvertFrom-Heic'
+            "$($conversionError[0])" | Should -BeLike "*so the module would use the global drive of that name, whose root is '$($globalRoot.FullName)'.*"
+            Join-Path -Path $globalRoot.FullName -ChildPath 'IMG_0001.jpg' | Should -Not -Exist
         }
     }
 }

@@ -68,7 +68,7 @@ Describe 'Get-ImageConverterFrameCount' {
         }
     }
 
-    It 'Should return the CorruptImageError of an animated GIF cut off after its first frame' {
+    It 'Should return the MagickCorruptImageErrorException of an animated GIF cut off after its first frame' {
         $file = New-TestFrameImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'cut.gif') -FrameCount 3 -Keep 0.8
 
         $Error.Clear()

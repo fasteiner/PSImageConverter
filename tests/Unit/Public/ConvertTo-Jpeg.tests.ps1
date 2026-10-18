@@ -1,3 +1,6 @@
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidGlobalVars', '', Justification = 'The -ErrorVariable, -WarningVariable and -OutVariable +name tests append to a global variable, as the interactive prompt and pwsh -File scripts do.')]
+param ()
+
 BeforeAll {
     $script:moduleName = 'PSImageConverter'
     Import-Module -Name $script:moduleName
@@ -398,6 +401,10 @@ Describe 'ConvertTo-Jpeg' {
             $caught.TargetObject | Should -Be $destinationPath
             $global:Error.Count - $errorCount | Should -Be 1
             $conversionError | Should -HaveCount 1
+            # For a terminating error -ErrorVariable holds the exception; its ErrorRecord is a copy of the record.
+            $conversionError[0] | Should -BeOfType [System.Management.Automation.CmdletInvocationException]
+            $conversionError[0].ErrorRecord.FullyQualifiedErrorId | Should -Be $caught.FullyQualifiedErrorId
+            $conversionError[0].ErrorRecord.TargetObject | Should -Be $destinationPath
             $result | Should -BeNullOrEmpty
             Get-ChildItem -Path $script:tempDir.FullName -Recurse -Force | Where-Object -FilterScript { $_.Extension -ne '.HEIC' -and $_.Name -ne 'file.txt' } | Should -BeNullOrEmpty
         }
@@ -407,6 +414,7 @@ Describe 'ConvertTo-Jpeg' {
         BeforeAll {
             function Invoke-UserFunction
             {
+                [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '', Justification = 'A user function that only receives -WhatIf and -Confirm; whether the cmdlet it calls follows them is what the tests check.')]
                 [CmdletBinding(SupportsShouldProcess = $true)]
                 param ([System.Collections.Hashtable] $Parameters)
 
@@ -464,6 +472,7 @@ Describe 'ConvertTo-Jpeg' {
             # An alias wins over every function of the same name, in every scope.
             function global:Invoke-PsicHijack
             {
+                [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Arguments', Justification = 'Takes every argument the wrapper passes to Convert-Image, so the call binds; the values do not matter.')]
                 param ([Parameter(ValueFromRemainingArguments = $true)] $Arguments)
 
                 'hijacked'
@@ -480,6 +489,88 @@ Describe 'ConvertTo-Jpeg' {
 
             $result | Should -BeOfType [System.IO.FileInfo]
             $result.Name | Should -Be 'IMG_0001.jpg'
+        }
+    }
+
+    Context 'When a path uses a PSDrive that the caller created in its own scope' {
+        BeforeEach {
+            # The module resolves paths in its own session state, which sees only the global drives.
+            $script:hint = "drive 'PsicScopeDrive' was created in a scope that the PSImageConverter module cannot see (inside a function, in a script run with & or by its path, or in another module). Create the drive with New-PSDrive -Scope Global, or use the file system path; the root of the drive is '$($script:tempDir.FullName)'."
+        }
+
+        It 'Should write PathNotFound of Convert-Image that explains the drive for <Case>' -ForEach @(
+            @{ Case = '-Path'; Parameters = @{ Path = 'PsicScopeDrive:\IMG_0001.HEIC' }; Location = $null }
+            @{ Case = '-LiteralPath'; Parameters = @{ LiteralPath = 'PsicScopeDrive:\IMG_0001.HEIC' }; Location = $null }
+            @{ Case = 'a relative path'; Parameters = @{ Path = 'IMG_0001.HEIC' }; Location = 'PsicScopeDrive:\' }
+        ) {
+            # Without -Scope Global the drive exists in this It block's scope only, like a drive created in a function.
+            $null = New-PSDrive -Name 'PsicScopeDrive' -PSProvider FileSystem -Root $script:tempDir.FullName
+            $errorCount = $global:Error.Count
+            if ($Location)
+            {
+                Push-Location -Path $Location
+            }
+
+            # 'PsicScopeDrive:\' on Windows, 'PsicScopeDrive:/' on Linux and macOS.
+            $currentLocation = (Get-Location).Path
+            try
+            {
+                $result = ConvertTo-Jpeg @Parameters -ErrorAction SilentlyContinue -ErrorVariable conversionError
+            }
+            finally
+            {
+                if ($Location)
+                {
+                    Pop-Location
+                }
+            }
+
+            $result | Should -BeNullOrEmpty
+            $conversionError | Should -HaveCount 1
+            $global:Error.Count - $errorCount | Should -Be 1
+            $conversionError[0].FullyQualifiedErrorId | Should -Be 'PathNotFound,Convert-Image'
+            $conversionError[0].TargetObject | Should -Be @($Parameters.Values)[0]
+            $expected = "Cannot resolve the path '$(@($Parameters.Values)[0])': $($script:hint)"
+            if ($Location)
+            {
+                $expected = "Cannot resolve the path '$(@($Parameters.Values)[0])', which is relative to the current location '$currentLocation': $($script:hint)"
+            }
+            "$($conversionError[0])" | Should -Be $expected
+
+        }
+
+        It 'Should stop the call with one terminating InvalidDestinationPath error of ConvertTo-Jpeg that explains the drive' {
+            $null = New-PSDrive -Name 'PsicScopeDrive' -PSProvider FileSystem -Root $script:tempDir.FullName
+            $errorCount = $global:Error.Count
+            $caught = $null
+
+            try
+            {
+                $null = ConvertTo-Jpeg -LiteralPath $script:source -DestinationPath 'PsicScopeDrive:\out'
+            }
+            catch
+            {
+                $caught = $_
+            }
+
+            $caught.FullyQualifiedErrorId | Should -Be 'InvalidDestinationPath,ConvertTo-Jpeg'
+            $caught.TargetObject | Should -Be 'PsicScopeDrive:\out'
+            "$caught" | Should -Be "The destination path 'PsicScopeDrive:\out' is not valid: $($script:hint)"
+            $global:Error.Count - $errorCount | Should -Be 1
+        }
+
+        It 'Should use a global drive for -Path and -DestinationPath' {
+            $null = New-PSDrive -Name 'PsicGlobalDrive' -PSProvider FileSystem -Root $script:tempDir.FullName -Scope Global
+            try
+            {
+                $result = ConvertTo-Jpeg -Path 'PsicGlobalDrive:\IMG_0001.HEIC' -DestinationPath 'PsicGlobalDrive:\out'
+            }
+            finally
+            {
+                Remove-PSDrive -Name 'PsicGlobalDrive' -Scope Global
+            }
+
+            $result.DirectoryName | Should -Be (Join-Path -Path $script:tempDir.FullName -ChildPath 'out' | Convert-Path)
         }
     }
 }

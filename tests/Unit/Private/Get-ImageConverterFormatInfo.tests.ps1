@@ -8,15 +8,15 @@ AfterAll {
 }
 
 Describe 'Get-ImageConverterFormatInfo' {
-    It 'Should return extension <Extension>, IsLossy <IsLossy>, KeepsExif <KeepsExif> and SupportsCmyk <SupportsCmyk> for <Format>' -ForEach @(
-        @{ Format = 'Jpeg'; Extension = '.jpg'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $true }
-        @{ Format = 'Png'; Extension = '.png'; IsLossy = $false; KeepsExif = $true; SupportsCmyk = $false }
-        @{ Format = 'WebP'; Extension = '.webp'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $false }
-        @{ Format = 'Avif'; Extension = '.avif'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $false }
-        @{ Format = 'Jxl'; Extension = '.jxl'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $false }
-        @{ Format = 'Tiff'; Extension = '.tif'; IsLossy = $false; KeepsExif = $false; SupportsCmyk = $true }
-        @{ Format = 'Bmp'; Extension = '.bmp'; IsLossy = $false; KeepsExif = $false; SupportsCmyk = $false }
-        @{ Format = 'Gif'; Extension = '.gif'; IsLossy = $false; KeepsExif = $false; SupportsCmyk = $false }
+    It 'Should return extension <Extension>, IsLossy <IsLossy>, KeepsExif <KeepsExif>, SupportsCmyk <SupportsCmyk> and StoresGray <StoresGray> for <Format>' -ForEach @(
+        @{ Format = 'Jpeg'; Extension = '.jpg'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $true; StoresGray = $true }
+        @{ Format = 'Png'; Extension = '.png'; IsLossy = $false; KeepsExif = $true; SupportsCmyk = $false; StoresGray = $true }
+        @{ Format = 'WebP'; Extension = '.webp'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $false; StoresGray = $false }
+        @{ Format = 'Avif'; Extension = '.avif'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $false; StoresGray = $false }
+        @{ Format = 'Jxl'; Extension = '.jxl'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $false; StoresGray = $true }
+        @{ Format = 'Tiff'; Extension = '.tif'; IsLossy = $false; KeepsExif = $false; SupportsCmyk = $true; StoresGray = $true }
+        @{ Format = 'Bmp'; Extension = '.bmp'; IsLossy = $false; KeepsExif = $false; SupportsCmyk = $false; StoresGray = $false }
+        @{ Format = 'Gif'; Extension = '.gif'; IsLossy = $false; KeepsExif = $false; SupportsCmyk = $false; StoresGray = $false }
     ) {
         $result = InModuleScope -ModuleName $script:moduleName -Parameters @{ Format = $Format } {
             Get-ImageConverterFormatInfo -Format $Format
@@ -27,6 +27,20 @@ Describe 'Get-ImageConverterFormatInfo' {
         $result.IsLossy | Should -Be $IsLossy
         $result.KeepsExif | Should -Be $KeepsExif
         $result.SupportsCmyk | Should -Be $SupportsCmyk
+        $result.StoresGray | Should -Be $StoresGray
+    }
+
+    It 'Should return the name spelled as in the table for -Format <Given>' -ForEach @(
+        @{ Given = 'webp'; Expected = 'WebP' }
+        @{ Given = 'JXL'; Expected = 'Jxl' }
+        @{ Given = 'jPeG'; Expected = 'Jpeg' }
+    ) {
+        $result = InModuleScope -ModuleName $script:moduleName -Parameters @{ Format = $Given } {
+            Get-ImageConverterFormatInfo -Format $Format
+        }
+
+        $result | Should -HaveCount 1
+        $result.Format | Should -BeExactly $Expected
     }
 
     It 'Should reject a format that cannot be written' {

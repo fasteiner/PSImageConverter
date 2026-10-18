@@ -34,12 +34,13 @@ function ConvertTo-Avif
         file. The folder is created if it does not exist; a folder that cannot be created or
         written to fails each file with ImageWriteFailed. Only file system paths are supported:
         a value that cannot name a folder (unknown drive, another provider, invalid characters,
-        an existing file or a link without target on the way) stops the call with one
-        terminating error.
+        an existing file or a link without target or that cannot be resolved on the way) stops
+        the call with one terminating error.
 
         .PARAMETER StripMetadata
         Removes EXIF (including the GPS location) and XMP metadata from the output. The ICC
-        colour profile is kept, so photos keep their colours.
+        colour profile is kept, so photos that carry one keep their colours; grey images with a
+        grey profile get sRGB pixels instead (see Get-Help Convert-Image -Full).
 
         .PARAMETER Force
         Overwrites output files that existed before the call, also read-only or hidden ones.
@@ -74,7 +75,7 @@ function ConvertTo-Avif
         AVIF output keeps EXIF, XMP and the ICC colour profile unless -StripMetadata is used;
         IPTC data and comments are not written. See Get-Help Convert-Image -Full for the other
         formats, sources with several frames or damaged data, the preference variables of the
-        caller and parallel conversions.
+        caller, parallel conversions and PSDrives that are not global.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '', Justification = 'ShouldProcess is called by Convert-Image, which receives -WhatIf and -Confirm through the bound parameters.')]
     [CmdletBinding(DefaultParameterSetName = 'Path', SupportsShouldProcess = $true)]
