@@ -13,11 +13,11 @@ function ConvertTo-Heic
         (Windows 10 1809 or later), on Linux the libheif of the distribution with its HEVC
         encoder x265, built in or as a plugin (e.g. sudo apt install libheif1
         libheif-plugin-x265 on Ubuntu 24.04; about_PSImageConverter lists other distributions),
-        on macOS ImageIO (macOS 10.13 or later on a Mac with an HEVC encoder). When that encoder is missing or does not work, the call stops
-        before any file is read with one terminating error HeicEncoderNotAvailable (category
-        NotInstalled, target object 'Heic'), also with -WhatIf; the message says what to
-        install. ConvertTo-Avif writes the royalty-free AV1 codec into the same HEIF container
-        and needs nothing installed.
+        on macOS ImageIO (every macOS that runs PowerShell 7.4, on a Mac with an HEVC encoder).
+        When that encoder is missing or does not work, the call stops before any file is read
+        with one terminating error HeicEncoderNotAvailable (category NotInstalled, target object
+        'Heic'), also with -WhatIf; the message says what to install. ConvertTo-Avif writes the
+        royalty-free AV1 codec into the same HEIF container and needs nothing installed.
         This is Convert-Image -Format Heic: all files of one call go through a single
         Convert-Image call, so output names, -Force, -WhatIf, the metadata handling and the
         error ids are the same, and errors are reported as coming from Convert-Image
@@ -88,28 +88,32 @@ function ConvertTo-Heic
         .NOTES
         What HEIC output keeps unless -StripMetadata is used depends on the encoder:
 
-        - Windows: EXIF, XMP and the ICC colour profile. The encoder takes opaque pixels only, so
-          transparent pixels are placed on a white background, as for Jpeg. Images with a side
-          longer than 22528 pixels fail with ImageWriteFailed.
+        - Windows: EXIF, XMP and the ICC colour profile. The encoder takes opaque pixels only,
+          so transparent pixels are placed on a white background, as for Jpeg. Images with a
+          side longer than 22528 pixels fail with ImageWriteFailed.
         - Linux: EXIF, XMP, the ICC colour profile and the alpha channel. Images with a side
           longer than 32768 pixels (libheif would not read the file back), or with a side
-          shorter than 32 pixels and the other longer than 4096, fail with ImageWriteFailed.
-          Images larger than 8 megapixels are encoded in several slices, so Magick.NET can read
-          them back; Windows' own viewer does not open such files, nor files with a side longer
-          than 16384 pixels.
-        - macOS: no EXIF and no XMP (a warning is written for a source with EXIF data); the alpha
-          channel and the ICC colour profile are kept, except sRGB, which ImageIO stores as nclx
-          colour information instead of a profile.
+          shorter than 32 pixels and the other longer than 4096, fail with ImageWriteFailed. An
+          image is encoded as one HEVC slice; only when that slice is larger than 15,000,000
+          bytes (Magick.NET reads slices up to 16 MiB; a photo with much detail from about 25
+          megapixels) is it encoded again in up to 13 slices, and when even those are too large,
+          it fails with ImageWriteFailed. Several slices are stored as one extent (part) of the
+          file, as Windows' own viewer needs; it does not open files with a side longer than
+          16384 pixels.
+        - macOS: no EXIF and no XMP (a warning is written for a source with EXIF data); the
+          alpha channel and the ICC colour profile are kept, except sRGB, which ImageIO stores
+          as nclx colour information instead of a profile. Which image sizes ImageIO rejects is
+          not checked yet.
 
         IPTC data and comments are not written. EXIF and XMP are stored as they are, so a block
         another program could not parse is kept, as in the other output formats; the EXIF
         orientation of the output is 1, because the pixels are already upright. Windows' own
         viewer (Photos, Explorer) does not show a HEIC image with a side shorter than 8 pixels,
-        whichever program wrote it, and ignores the alpha channel of HEIC files. The check whether the encoder works runs once per
-        PowerShell process; after installing an encoder, start a new session. See Get-Help
-        Convert-Image -Full for the other formats, sources with several frames or damaged data,
-        the preference variables of the caller, parallel conversions and PSDrives that are not
-        global.
+        whichever program wrote it, and ignores the alpha channel of HEIC files. The check
+        whether the encoder works runs once per PowerShell process; after installing an encoder,
+        start a new session. See Get-Help Convert-Image -Full for the other formats, sources
+        with several frames or damaged data, the preference variables of the caller, parallel
+        conversions and PSDrives that are not global.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '', Justification = 'ShouldProcess is called by Convert-Image, which receives -WhatIf and -Confirm through the bound parameters.')]
     [CmdletBinding(DefaultParameterSetName = 'Path', SupportsShouldProcess = $true)]

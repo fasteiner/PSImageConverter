@@ -155,6 +155,22 @@ BeforeAll {
         }
     }
 
+    <#
+        Writes the HEIC file of the Linux encoder for 8-bit RGB or RGBA pixels at quality 100, with the largest slice it may
+        have in bytes: its internal overload, called through reflection, takes the limit that is 15,000,000 bytes for every
+        conversion (Magick.NET reads slices up to 16 MiB), so a small image takes the path of a large one.
+    #>
+    function Invoke-LibHeifEncode
+    {
+        param ([System.String] $Path, [System.Byte[]] $Pixels, [System.Int32] $Width, [System.Int32] $Height, [System.Int32] $Channels, [System.Int32] $MaximumSliceLength)
+
+        $type = [PSImageConverter.HeicEncoder].Assembly.GetType('PSImageConverter.LibHeifHeicEncoder', $true)
+        $parameterTypes = [System.Type[]] @([System.Int32], [System.Int32], [System.Byte[]], [System.Int32], [System.Int32], [System.Byte[]], [System.Byte[]], [System.Byte[]], [System.Int32])
+        $encode = $type.GetMethod('Encode', [System.Reflection.BindingFlags] 'NonPublic, Static', $null, $parameterTypes, $null)
+        $bytes = $encode.Invoke($null, [System.Object[]] @($Width, $Height, $Pixels, $Channels, 100, $null, $null, $null, $MaximumSliceLength))
+        [System.IO.File]::WriteAllBytes($Path, $bytes)
+    }
+
     # The mean difference of the R, G and B values a viewer shows for two images of one size.
     function Get-MeanDifference
     {
@@ -305,7 +321,8 @@ Describe 'ConvertTo-Heic' {
         }
 
         It 'Should name the reason of the probe and what to install in the terminating error' {
-            $reason = [PSImageConverter.HeicEncoder]::GetUnavailableReason()
+            # -ExpectedMessage is a wildcard pattern; the reason, a message of the encoder, is matched literally.
+            $reason = [System.Management.Automation.WildcardPattern]::Escape([PSImageConverter.HeicEncoder]::GetUnavailableReason())
 
             { ConvertTo-Heic -LiteralPath $script:source } | Should -Throw -ErrorId 'HeicEncoderNotAvailable,ConvertTo-Heic' -ExpectedMessage "HEIC cannot be written on this computer: the module uses the HEVC encoder of the operating system and ships none of its own. $reason *-Format Avif*"
             Get-ChildItem -Path $script:tempDir.FullName -Filter '*.heic' | Should -BeNullOrEmpty
@@ -817,8 +834,11 @@ Describe 'ConvertTo-Heic' {
             $readBack.Height | Should -Be 3000
             if ($IsLinux)
             {
-                # Magick.NET cannot read an HEVC slice over about 16 MiB, so x265 is asked for one slice per 8 megapixels.
-                (Get-TestHeifInfo -Path $result.FullName).SliceCount | Should -Be 2
+                # One slice (the image is far below the slice size Magick.NET reads) in one extent: Windows' own viewer refuses an
+                # image stored in several extents, which libheif 1.17 and older write for every NAL unit after the parameter sets.
+                $info = Get-TestHeifInfo -Path $result.FullName
+                $info.SliceCount | Should -Be 1
+                $info.ExtentCount | Should -Be 1
             }
 
             $points = @(@(0, 0), @(3999, 2999), @(2000, 1500))
@@ -833,6 +853,67 @@ Describe 'ConvertTo-Heic' {
                     [System.Math]::Abs($actual[$index][$channel] - $expected[$index][$channel]) | Should -BeLessOrEqual $tolerance
                 }
             }
+        }
+
+        It 'Should encode an image again in several slices of at most the allowed size, each image in one extent, on Linux' -Skip:(-not $IsLinux) {
+            # 1000x1000 pixels of random colour noise at quality 100 cost x265 about 1.5 MB, so one slice is too large for the
+            # 300,000 bytes allowed here and LibHeifHeicEncoder encodes the image again, up to three times, in more slices. The
+            # alpha channel is half transparent everywhere: libheif 1.23 encodes the alpha image without the x265 parameters,
+            # so it stays one slice, which has to fit as well.
+            $path = Join-Path -Path $script:tempDir.FullName -ChildPath 'noise.heic'
+            $noise = [System.Byte[]]::new(1000 * 1000 * 4)
+            [System.Random]::new(1).NextBytes($noise)
+            $image = [ImageMagick.MagickImage]::new()
+            try
+            {
+                $image.ReadPixels($noise, [ImageMagick.PixelReadSettings]::new(1000, 1000, [ImageMagick.StorageType]::Char, 'RGBA'))
+                $image.Evaluate([ImageMagick.Channels]::Alpha, [ImageMagick.EvaluateOperator]::Set, [ImageMagick.Percentage]::new(50))
+                $pixels = $image.GetPixels().ToByteArray([ImageMagick.PixelMapping]::RGBA)
+            }
+            finally
+            {
+                $image.Dispose()
+            }
+
+            Invoke-LibHeifEncode -Path $path -Pixels $pixels -Width 1000 -Height 1000 -Channels 4 -MaximumSliceLength 300000
+            $info = Get-TestHeifInfo -Path $path
+            $readBack = Get-ReadBack -Path $path
+
+            $info.SliceCount | Should -BeGreaterThan 1
+            ($info.SliceSizes | Measure-Object -Sum).Sum | Should -BeGreaterThan 300000
+            foreach ($size in $info.SliceSizes)
+            {
+                $size | Should -BeLessOrEqual 300000
+            }
+
+            # The colour and the alpha image; libheif 1.17 and older (the CI runner) write one extent per slice.
+            $info.HevcExtentCounts | Should -Be @(1, 1)
+            $readBack.Width | Should -Be 1000
+            $readBack.Height | Should -Be 1000
+            $readBack.HasAlpha | Should -BeTrue
+        }
+
+        It 'Should fail on Linux when x265 cannot keep the slices of an image within the allowed size' -Skip:(-not $IsLinux) {
+            # x265 cuts slices only between rows of 64-pixel coding blocks, and one such row of 3000 pixels of random noise at
+            # quality 100 costs about 300,000 bytes, more than the 200,000 allowed here.
+            $path = Join-Path -Path $script:tempDir.FullName -ChildPath 'rows.heic'
+            $pixels = [System.Byte[]]::new(3000 * 192 * 3)
+            [System.Random]::new(1).NextBytes($pixels)
+            $caught = $null
+
+            try
+            {
+                Invoke-LibHeifEncode -Path $path -Pixels $pixels -Width 3000 -Height 192 -Channels 3 -MaximumSliceLength 200000
+            }
+            catch
+            {
+                $caught = $_.Exception.GetBaseException()
+            }
+
+            $caught | Should -BeOfType [PSImageConverter.HeicEncoderException]
+            $caught.Message | Should -BeLike 'x265 wrote a slice of * bytes in * slices of an image of 3000x192 pixels; for Magick.NET to read the file back (it reads slices up to 16 MiB), a slice may have at most 200000 bytes, and x265 writes no more slices for this image.*'
+            $caught.EncoderMissing | Should -BeFalse
+            $path | Should -Not -Exist
         }
 
         It 'Should convert <Case> to sRGB pixels that show the same colour' -ForEach @(

@@ -83,7 +83,7 @@ Describe 'Assert-ImageConverterHeicEncoder' {
         @{
             Platform = 'macOS'
             Reason   = "ImageIO cannot write HEIC on this Mac (CGImageDestinationCreateWithData returned NULL for 'public.heic')."
-            Advice   = 'ImageIO writes HEIC on macOS 10.13 or later, on a Mac that provides an HEVC encoder; virtual machines often have none.'
+            Advice   = 'ImageIO writes HEIC on every macOS that runs PowerShell 7.4, on a Mac that provides an HEVC encoder.'
         }
     ) {
         $script:status = [PSCustomObject] @{ IsAvailable = $false; Reason = $Reason; Platform = $Platform }

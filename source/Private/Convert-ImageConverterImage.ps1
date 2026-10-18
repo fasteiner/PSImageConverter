@@ -13,38 +13,38 @@ function Convert-ImageConverterImage
         pixels of a source with an ICC profile that matches them (colour or grey) to sRGB for
         lossy Jxl output (Quality below 100), whose encoder stores no ICC profile, and grey
         pixels with a grey profile to sRGB for WebP, Avif, Heic, Bmp and Gif output, which store
-        grey pixels as RGB; a grey JPEG XL source, which ImageMagick reads as sRGB, counts as grey.
-        A profile made for other pixels (a grey profile in a colour image or the other way
+        grey pixels as RGB; a grey JPEG XL source, which ImageMagick reads as sRGB, counts as
+        grey. A profile made for other pixels (a grey profile in a colour image or the other way
         round) is left out of lossless Jxl output, which cannot be written with it, and a grey
         profile on colour pixels out of Avif and Bmp output, which browsers then show wrongly,
-        out of Heic output, whose encoders get RGB pixels,
-        and out of Jpeg, Png and Tiff output when the pixels are all neutral grey, which these
-        formats store as grey. After the profile is replaced or left out, the icc:* properties
-        that describe the source profile are removed. Optionally strips the metadata but keeps
-        the ICC colour profile (the one left after these steps), flattens transparent pixels
-        onto white for the formats without alpha (Jpeg, CMYK white for a CMYK image; Heic on
-        Windows), writes Tiff output of an image with alpha with at least 8 bits per sample,
-        sets the quality for lossy output formats and writes the image in the requested format;
-        Png output gets the ICC profile only as iCCP chunk, and Png, Jpeg and Tiff output are
-        stored as RGB when an RGB profile is kept for neutral grey pixels. Heic output is
-        encoded by the encoder of the operating system (Invoke-ImageConverterHeicEncoder) from
-        the pixels, the ICC profile, the EXIF block with orientation 1 and the XMP packet. The
-        image is written into a temporary file in the target folder first, through a stream so
-        neither ImageMagick nor the HEIC encoder sees the file name, and then moved over the
-        target, so a failed or stopped conversion never leaves a truncated target file or the temporary file
-        behind; the target folder is created when it does not exist. With Force, the ReadOnly
-        and Hidden attributes of an existing target are cleared before it is replaced and
-        restored when it cannot be replaced.
+        out of Heic output, whose encoders get RGB pixels, and out of Jpeg, Png and Tiff output
+        when the pixels are all neutral grey, which these formats store as grey. After the
+        profile is replaced or left out, the icc:* properties that describe the source profile
+        are removed. Optionally strips the metadata but keeps the ICC colour profile (the one
+        left after these steps), flattens transparent pixels onto white for the formats without
+        alpha (Jpeg, CMYK white for a CMYK image; Heic on Windows), writes Tiff output of an
+        image with alpha with at least 8 bits per sample, sets the quality for lossy output
+        formats and writes the image in the requested format; Png output gets the ICC profile
+        only as iCCP chunk, and Png, Jpeg and Tiff output are stored as RGB when an RGB profile
+        is kept for neutral grey pixels. Heic output is encoded by the encoder of the operating
+        system (Invoke-ImageConverterHeicEncoder) from the pixels, the ICC profile, the EXIF
+        block with orientation 1 and the XMP packet. The image is written into a temporary file
+        in the target folder first, through a stream so neither ImageMagick nor the HEIC encoder
+        sees the file name, and then moved over the target, so a failed or stopped conversion
+        never leaves a truncated target file or the temporary file behind; the target folder is
+        created when it does not exist. With Force, the ReadOnly and Hidden attributes of an
+        existing target are cleared before it is replaced and restored when it cannot be
+        replaced.
         Failures are written as non-terminating errors through the cmdlet passed in -Cmdlet:
-        ImageReadFailed when the source cannot be read, ImageWriteFailed when the target
-        cannot be written (also when the HEIC encoder rejects the image, e.g. a size it cannot
-        encode). Warnings are written through the same cmdlet: when ImageMagick
-        reports the source as damaged (it is converted anyway; a warning that the caller turns
-        into a stop still disposes the decoded image), when the source has more than one frame
-        and only the first is converted, and, for output formats that cannot carry EXIF data
-        (Tiff, Bmp, Gif; Heic on macOS), when the source has EXIF data and StripMetadata is not set.
-        Returns the written file as the FileSystem provider returns it (a FileInfo with PSPath),
-        or nothing after a failure.
+        ImageReadFailed when the source cannot be read, ImageWriteFailed when the target cannot
+        be written (also when the HEIC encoder rejects the image, e.g. a size it cannot encode).
+        Warnings are written through the same cmdlet: when ImageMagick reports the source as
+        damaged (it is converted anyway; a warning that the caller turns into a stop still
+        disposes the decoded image), when the source has more than one frame and only the first
+        is converted, and, for output formats that cannot carry EXIF data (Tiff, Bmp, Gif; Heic
+        on macOS), when the source has EXIF data and StripMetadata is not set. Returns the
+        written file as the FileSystem provider returns it (a FileInfo with PSPath), or nothing
+        after a failure.
 
         .PARAMETER Cmdlet
         The $PSCmdlet of the public cmdlet that reports errors and warnings, e.g. Convert-Image.
@@ -64,8 +64,8 @@ function Convert-ImageConverterImage
         .PARAMETER StripMetadata
         Removes EXIF, XMP, IPTC and comments from the output but keeps the ICC colour profile,
         except where the pixels are converted to sRGB instead (lossy Jxl; grey pixels with a
-        grey profile in WebP, Avif, Heic, Bmp and Gif output) or the profile is left out (see the
-        description: a profile that cannot be applied or one made for other pixels).
+        grey profile in WebP, Avif, Heic, Bmp and Gif output) or the profile is left out (see
+        the description: a profile that cannot be applied or one made for other pixels).
 
         .PARAMETER Force
         Replaces an existing target file, also when it is read-only or hidden.

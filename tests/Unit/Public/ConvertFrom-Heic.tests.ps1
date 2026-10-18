@@ -701,7 +701,7 @@ Describe 'ConvertFrom-Heic' {
 
             $caught.FullyQualifiedErrorId | Should -Be 'HeicEncoderNotAvailable,ConvertFrom-Heic'
             $caught.TargetObject | Should -Be 'Heic'
-            "$caught" | Should -BeLike '*No encoder in this test. ImageIO writes HEIC on macOS 10.13 or later*-Format Avif*'
+            "$caught" | Should -BeLike '*No encoder in this test. ImageIO writes HEIC on every macOS that runs PowerShell 7.4*-Format Avif*'
             $global:Error.Count - $errorCount | Should -Be 1
             Should -Invoke -ModuleName $script:moduleName -CommandName Read-ImageConverterImage -Times 0 -Exactly
         }

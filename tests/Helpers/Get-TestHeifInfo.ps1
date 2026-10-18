@@ -7,9 +7,12 @@ function Get-TestHeifInfo
         .DESCRIPTION
         Returns the type of the primary item, its nclx colour box (primaries, transfer, matrix, full
         range; $null when it has none), whether it has an ICC profile (colr prof), the types of all
-        items and the number of coded slices (HEVC VCL NAL units) of its coded image, or of the first
-        tile when the primary item is a grid. Only what the encoders of this module write is read:
-        boxes with 32-bit sizes inside meta, items in the file (construction method 0) or in idat (1).
+        items, the number and sizes in bytes of the coded slices (HEVC VCL NAL units) of its coded
+        image, or of the first tile when the primary item is a grid, the number of iloc extents of
+        that coded image and the numbers of extents of all HEVC items (hvc1: the coded images, tiles
+        and an alpha image) in the order of their item IDs. Only what the encoders of this module
+        write is read: boxes with 32-bit sizes inside meta, items in the file (construction method 0)
+        or in idat (1).
 
         .PARAMETER Path
         The HEIF file to read.
@@ -86,8 +89,9 @@ function Get-TestHeifInfo
         $types[[System.UInt64] (Read-Number -Position ($entry.Body + 4) -Size $idSize)] = [System.Text.Encoding]::ASCII.GetString($data, $entry.Body + 4 + $idSize + 2, 4)
     }
 
-    # iloc: the bytes of every item.
+    # iloc: the bytes and the number of extents of every item.
     $location = @{}
+    $extents = @{}
     $version = $data[$box.iloc.Body]
     $position = $box.iloc.Body + 4
     $offsetSize = $data[$position] -shr 4
@@ -127,6 +131,7 @@ function Get-TestHeifInfo
         }
 
         $location[[System.UInt64] $id] = $bytes.ToArray()
+        $extents[[System.UInt64] $id] = [System.Int32] $extentCount
     }
 
     # ipco and ipma: the property boxes of every item.
@@ -216,7 +221,7 @@ function Get-TestHeifInfo
     $hvcC = Get-HeifItemProperty -Id $coded -Type 'hvcC' | Select-Object -First 1
     $nalLengthSize = ($data[$hvcC.Body + 21] -band 3) + 1
     $stream = $location[$coded]
-    $sliceCount = 0
+    $sliceSizes = [System.Collections.Generic.List[System.Int64]]::new()
     $position = 0
     while ($position + $nalLengthSize -lt $stream.Length)
     {
@@ -228,17 +233,20 @@ function Get-TestHeifInfo
 
         if ((($stream[$position + $nalLengthSize] -shr 1) -band 0x3F) -lt 32)
         {
-            $sliceCount++
+            $sliceSizes.Add($length)
         }
 
         $position += $nalLengthSize + $length
     }
 
     [PSCustomObject] @{
-        PrimaryType = $types[[System.UInt64] $primary]
-        ItemTypes   = @($types.Keys | Sort-Object | ForEach-Object -Process { $types[$_] })
-        Nclx        = $nclx
-        HasProfile  = $hasProfile
-        SliceCount  = $sliceCount
+        PrimaryType      = $types[[System.UInt64] $primary]
+        ItemTypes        = @($types.Keys | Sort-Object | ForEach-Object -Process { $types[$_] })
+        Nclx             = $nclx
+        HasProfile       = $hasProfile
+        SliceCount       = $sliceSizes.Count
+        SliceSizes       = $sliceSizes.ToArray()
+        ExtentCount      = $extents[$coded]
+        HevcExtentCounts = @($types.Keys | Sort-Object | Where-Object -FilterScript { $types[$_] -eq 'hvc1' } | ForEach-Object -Process { $extents[$_] })
     }
 }

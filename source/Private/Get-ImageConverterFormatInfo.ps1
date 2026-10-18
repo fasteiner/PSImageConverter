@@ -6,18 +6,18 @@ function Get-ImageConverterFormatInfo
 
         .DESCRIPTION
         Returns an object with the output format name (spelled as in the -Format ValidateSet of
-        the cmdlets, whatever the casing of -Format), the file extension written for it,
-        whether -Quality applies (lossy formats), whether the output keeps the EXIF profile,
-        whether it stores CMYK pixels, whether it stores grey pixels as grey (one channel) and
-        whether it keeps an alpha channel. Tiff, Bmp and Gif output loses the EXIF data, so the
-        cmdlets warn about it. CMYK sources are converted to sRGB for the formats that cannot
-        store CMYK, because their encoders would otherwise change or invert the colours. WebP,
-        Avif, Heic, Bmp and Gif store grey pixels as RGB, for which a grey ICC profile is not
-        valid, so grey pixels with a grey profile are converted to sRGB for them. Transparent
-        pixels are flattened onto white for the formats without alpha. Heic is written by the
-        encoder of the operating system, so two values depend on the platform: the WIC encoder of
-        Windows stores no alpha channel, and ImageIO of macOS writes no EXIF. Without -Format the
-        objects of all output formats are returned, so the tests can compare the -Format
+        the cmdlets, whatever the casing of -Format), the file extension written for it, whether
+        -Quality applies (lossy formats), whether the output keeps the EXIF profile, whether it
+        stores CMYK pixels, whether it stores grey pixels as grey (one channel) and whether it
+        keeps an alpha channel. Tiff, Bmp and Gif output loses the EXIF data, so the cmdlets
+        warn about it. CMYK sources are converted to sRGB for the formats that cannot store
+        CMYK, because their encoders would otherwise change or invert the colours. WebP, Avif,
+        Heic, Bmp and Gif store grey pixels as RGB, for which a grey ICC profile is not valid,
+        so grey pixels with a grey profile are converted to sRGB for them. Transparent pixels
+        are flattened onto white for the formats without alpha. Heic is written by the encoder
+        of the operating system, so two values depend on the platform: the WIC encoder of
+        Windows stores no alpha channel, and ImageIO of macOS writes no EXIF. Without -Format
+        the objects of all output formats are returned, so the tests can compare the -Format
         ValidateSets of the cmdlets with this table.
 
         .PARAMETER Format
@@ -27,8 +27,8 @@ function Get-ImageConverterFormatInfo
         .EXAMPLE
         Get-ImageConverterFormatInfo -Format 'WebP'
 
-        Returns Format WebP, Extension .webp, IsLossy $true, KeepsExif $true, SupportsCmyk $false,
-        StoresGray $false and KeepsAlpha $true.
+        Returns Format WebP, Extension .webp, IsLossy $true, KeepsExif $true,
+        SupportsCmyk $false, StoresGray $false and KeepsAlpha $true.
 
         .EXAMPLE
         (Get-ImageConverterFormatInfo).Format

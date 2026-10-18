@@ -6,7 +6,8 @@ namespace PSImageConverter
 {
     /// <summary>
     /// Corrects the boxes of HEIF files written by the WIC HEIF encoder and by libheif: crops the
-    /// padding away, adds the nclx colour box and stores EXIF and XMP as metadata items.
+    /// padding away, adds the nclx colour box, stores EXIF and XMP as metadata items and joins
+    /// extents that follow each other. Also measures the HEVC slices of the coded images.
     /// </summary>
     internal static class HeifBoxEditor
     {
@@ -312,6 +313,304 @@ namespace PSImageConverter
             return result;
         }
 
+        // Stores every item whose extents follow each other without a gap as one extent. libheif 1.17
+        // and older store each slice of a coded image as an extent of its own, and Windows' own HEIF
+        // decoder (Photos, Explorer) refuses an item of several extents (E_UNEXPECTED); it opens the
+        // same data as one extent, as libheif 1.21 and later write it. The data of an item is its
+        // extents one after the other, so it stays the same. Items with extent indexes or without
+        // offset or length fields, items of construction method 2 (data of other items) and extents
+        // with gaps are left as they are. The meta box shrinks, so the item offsets in iloc that point
+        // behind it move back by the same amount.
+        internal static byte[] MergeContiguousExtents(byte[] file)
+        {
+            int metaStart = FindBox(file, 0, file.Length, "meta");
+            if (metaStart < 0)
+            {
+                throw new InvalidDataException("The HEIF file has no meta box.");
+            }
+
+            int metaSize = (int)ReadUInt(file, metaStart, 4);
+            int metaEnd = metaStart + metaSize;
+            List<KeyValuePair<string, byte[]>> metaChildren = Children(file, metaStart + 12, metaEnd);
+            int ilocIndex = metaChildren.FindIndex(c => c.Key == "iloc");
+            if (ilocIndex < 0)
+            {
+                throw new InvalidDataException("The HEIF file has no iloc box.");
+            }
+
+            byte[] iloc = metaChildren[ilocIndex].Value;
+            int version = iloc[8];
+            int offsetSize = iloc[12] >> 4;
+            int lengthSize = iloc[12] & 0xF;
+            int baseOffsetSize = iloc[13] >> 4;
+            int indexSize = version >= 1 ? iloc[13] & 0xF : 0;
+            int idSize = version < 2 ? 2 : 4;
+            if (offsetSize == 0 || lengthSize == 0 || indexSize != 0)
+            {
+                return file;
+            }
+
+            // The body of the new iloc box: the field sizes and the item count as they are, then
+            // every item, with one extent where its extents follow each other.
+            MemoryStream body = new MemoryStream();
+            body.Write(iloc, 12, 2 + idSize);
+            int position = 14;
+            uint itemCount = ReadUInt(iloc, position, idSize);
+            position += idSize;
+            bool merged = false;
+            for (uint i = 0; i < itemCount; i++)
+            {
+                int entryStart = position;
+                position += idSize;
+                int constructionMethod = 0;
+                if (version >= 1)
+                {
+                    constructionMethod = iloc[position + 1] & 0xF;
+                    position += 2;
+                }
+
+                position += 2 + baseOffsetSize;
+                int extentCountPosition = position;
+                int extentCount = (int)ReadUInt(iloc, position, 2);
+                position += 2;
+                ulong firstOffset = 0;
+                ulong end = 0;
+                bool contiguous = constructionMethod <= 1;
+                for (int e = 0; e < extentCount; e++)
+                {
+                    ulong offset = ReadULong(iloc, position, offsetSize);
+                    ulong length = ReadULong(iloc, position + offsetSize, lengthSize);
+                    position += offsetSize + lengthSize;
+                    if (e == 0)
+                    {
+                        firstOffset = offset;
+                    }
+                    else if (offset != end)
+                    {
+                        contiguous = false;
+                    }
+
+                    end = offset + length;
+                    if (end < offset)
+                    {
+                        contiguous = false;
+                    }
+                }
+
+                // The lengths added up must fit the length field.
+                ulong total = end - firstOffset;
+                if (extentCount > 1 && contiguous && (lengthSize == 8 || total >> (lengthSize * 8) == 0))
+                {
+                    body.Write(iloc, entryStart, extentCountPosition - entryStart);
+                    WriteUInt(body, 1, 2);
+                    WriteULong(body, firstOffset, offsetSize);
+                    WriteULong(body, total, lengthSize);
+                    merged = true;
+                }
+                else
+                {
+                    body.Write(iloc, entryStart, position - entryStart);
+                }
+            }
+
+            if (!merged)
+            {
+                return file;
+            }
+
+            body.Write(iloc, position, iloc.Length - position);
+            metaChildren[ilocIndex] = new KeyValuePair<string, byte[]>("iloc", Box("iloc", body.ToArray(), Header(iloc)));
+            byte[] newMeta = Box("meta", Concat(metaChildren), Header(file, metaStart));
+            int delta = newMeta.Length - metaSize;
+
+            int newIloc = FindBox(newMeta, 12, newMeta.Length, "iloc");
+            byte[] shiftedIloc = new byte[ReadUInt(newMeta, newIloc, 4)];
+            Buffer.BlockCopy(newMeta, newIloc, shiftedIloc, 0, shiftedIloc.Length);
+            ShiftItemLocations(shiftedIloc, metaEnd, delta);
+            Buffer.BlockCopy(shiftedIloc, 0, newMeta, newIloc, shiftedIloc.Length);
+
+            byte[] result = new byte[file.Length + delta];
+            Buffer.BlockCopy(file, 0, result, 0, metaStart);
+            Buffer.BlockCopy(newMeta, 0, result, metaStart, newMeta.Length);
+            Buffer.BlockCopy(file, metaEnd, result, metaStart + newMeta.Length, file.Length - metaEnd);
+            return result;
+        }
+
+        // Measures the HEVC slices of every coded image (hvc1 item, so also an alpha image) of a HEIF
+        // file: returns the most slices that one image has and the length in bytes of the largest
+        // slice (VCL NAL unit, types 0 to 31) of all of them. In an item every NAL unit is prefixed
+        // with its length, in lengthSizeMinusOne + 1 bytes of the item's hvcC property. Items in the
+        // file (construction method 0) and in idat (1) are read.
+        internal static (int Slices, int LargestSlice) MeasureSlices(byte[] file)
+        {
+            int metaStart = FindBox(file, 0, file.Length, "meta");
+            int metaEnd = metaStart < 0 ? -1 : metaStart + (int)ReadUInt(file, metaStart, 4);
+            int iinf = metaStart < 0 ? -1 : FindBox(file, metaStart + 12, metaEnd, "iinf");
+            int iloc = metaStart < 0 ? -1 : FindBox(file, metaStart + 12, metaEnd, "iloc");
+            int idat = metaStart < 0 ? -1 : FindBox(file, metaStart + 12, metaEnd, "idat");
+            int iprp = metaStart < 0 ? -1 : FindBox(file, metaStart + 12, metaEnd, "iprp");
+            int iprpEnd = iprp < 0 ? -1 : iprp + (int)ReadUInt(file, iprp, 4);
+            int ipco = iprp < 0 ? -1 : FindBox(file, iprp + 8, iprpEnd, "ipco");
+            int ipma = iprp < 0 ? -1 : FindBox(file, iprp + 8, iprpEnd, "ipma");
+            if (iinf < 0 || iloc < 0 || ipco < 0 || ipma < 0)
+            {
+                throw new InvalidDataException("The HEIF file has no iinf, iloc, ipco or ipma box.");
+            }
+
+            // iinf: the hvc1 items; an infe box of version 2 has a 16-bit item ID, version 3 a 32-bit one.
+            HashSet<uint> codedItems = new HashSet<uint>();
+            foreach (int entry in BoxOffsets(file, iinf + 12 + (file[iinf + 8] == 0 ? 2 : 4), iinf + (int)ReadUInt(file, iinf, 4)))
+            {
+                int infeVersion = file[entry + 8];
+                int idSize = infeVersion == 2 ? 2 : 4;
+                if (infeVersion >= 2 && System.Text.Encoding.ASCII.GetString(file, entry + 12 + idSize + 2, 4) == "hvc1")
+                {
+                    codedItems.Add(ReadUInt(file, entry + 12, idSize));
+                }
+            }
+
+            // ipco and ipma: the NAL length size from the hvcC property of each hvc1 item.
+            List<int> properties = BoxOffsets(file, ipco + 8, ipco + (int)ReadUInt(file, ipco, 4));
+            Dictionary<uint, int> nalLengthSizes = new Dictionary<uint, int>();
+            int ipmaVersion = file[ipma + 8];
+            bool wide = (file[ipma + 11] & 1) != 0;
+            int cursor = ipma + 12;
+            uint entryCount = ReadUInt(file, cursor, 4);
+            cursor += 4;
+            for (uint e = 0; e < entryCount; e++)
+            {
+                uint itemId = ReadUInt(file, cursor, ipmaVersion < 1 ? 2 : 4);
+                cursor += ipmaVersion < 1 ? 2 : 4;
+                int count = file[cursor++];
+                for (int a = 0; a < count; a++)
+                {
+                    int index = wide ? (int)ReadUInt(file, cursor, 2) & 0x7FFF : file[cursor] & 0x7F;
+                    cursor += wide ? 2 : 1;
+                    if (codedItems.Contains(itemId) && index >= 1 && index <= properties.Count)
+                    {
+                        int property = properties[index - 1];
+                        if (System.Text.Encoding.ASCII.GetString(file, property + 4, 4) == "hvcC" && ReadUInt(file, property, 4) >= 31)
+                        {
+                            nalLengthSizes[itemId] = (file[property + 8 + 21] & 3) + 1;
+                        }
+                    }
+                }
+            }
+
+            // iloc: the bytes of each hvc1 item, then its NAL units.
+            int version = file[iloc + 8];
+            int position = iloc + 12;
+            int offsetSize = file[position] >> 4;
+            int lengthSize = file[position] & 0xF;
+            int baseOffsetSize = file[position + 1] >> 4;
+            int indexSize = version >= 1 ? file[position + 1] & 0xF : 0;
+            int ilocIdSize = version < 2 ? 2 : 4;
+            position += 2;
+            uint itemCount = ReadUInt(file, position, ilocIdSize);
+            position += ilocIdSize;
+            int slices = 0;
+            int largest = 0;
+            for (uint i = 0; i < itemCount; i++)
+            {
+                uint itemId = ReadUInt(file, position, ilocIdSize);
+                position += ilocIdSize;
+                int constructionMethod = 0;
+                if (version >= 1)
+                {
+                    constructionMethod = file[position + 1] & 0xF;
+                    position += 2;
+                }
+
+                position += 2;
+                ulong baseOffset = ReadULong(file, position, baseOffsetSize);
+                position += baseOffsetSize;
+                int extentCount = (int)ReadUInt(file, position, 2);
+                position += 2;
+                MemoryStream data = new MemoryStream();
+                for (int extent = 0; extent < extentCount; extent++)
+                {
+                    position += indexSize;
+                    ulong offset = ReadULong(file, position, offsetSize);
+                    position += offsetSize;
+                    ulong length = ReadULong(file, position, lengthSize);
+                    position += lengthSize;
+                    if (codedItems.Contains(itemId))
+                    {
+                        ulong start = baseOffset + offset + (constructionMethod == 1 && idat >= 0 ? (ulong)idat + 8 : 0);
+                        if ((constructionMethod != 0 && (constructionMethod != 1 || idat < 0)) || start + length > (ulong)file.Length)
+                        {
+                            throw new InvalidDataException("An HEVC item of the HEIF file lies outside the file.");
+                        }
+
+                        data.Write(file, (int)start, (int)length);
+                    }
+                }
+
+                if (codedItems.Contains(itemId))
+                {
+                    if (!nalLengthSizes.TryGetValue(itemId, out int nalLengthSize))
+                    {
+                        throw new InvalidDataException("An HEVC item of the HEIF file has no hvcC property.");
+                    }
+
+                    (int itemSlices, int itemLargest) = ScanNalUnits(data.GetBuffer(), (int)data.Length, nalLengthSize);
+                    slices = Math.Max(slices, itemSlices);
+                    largest = Math.Max(largest, itemLargest);
+                }
+            }
+
+            return (slices, largest);
+        }
+
+        // Counts the VCL NAL units (slices) among the length-prefixed NAL units of an HEVC item and
+        // returns their number and the length of the largest one.
+        private static (int Slices, int Largest) ScanNalUnits(byte[] data, int end, int nalLengthSize)
+        {
+            int slices = 0;
+            int largest = 0;
+            int position = 0;
+            while (position + nalLengthSize < end)
+            {
+                ulong length = ReadULong(data, position, nalLengthSize);
+                position += nalLengthSize;
+                if (length > (ulong)(end - position))
+                {
+                    throw new InvalidDataException("A NAL unit of an HEVC item of the HEIF file is longer than the item.");
+                }
+
+                // The NAL unit type is bits 1 to 6 of the first header byte.
+                if (length > 0 && ((data[position] >> 1) & 0x3F) < 32)
+                {
+                    slices++;
+                    largest = Math.Max(largest, (int)length);
+                }
+
+                position += (int)length;
+            }
+
+            return (slices, largest);
+        }
+
+        // The offsets of the boxes between start and end.
+        private static List<int> BoxOffsets(byte[] data, int start, int end)
+        {
+            List<int> offsets = new List<int>();
+            int position = start;
+            while (position + 8 <= end)
+            {
+                uint size = ReadUInt(data, position, 4);
+                if (size < 8 || position + size > end)
+                {
+                    throw new InvalidDataException("A HEIF box has an invalid size.");
+                }
+
+                offsets.Add(position);
+                position += (int)size;
+            }
+
+            return offsets;
+        }
+
         // The ID of the primary item (pitm).
         private static uint PrimaryItem(byte[] file)
         {
@@ -470,7 +769,7 @@ namespace PSImageConverter
         }
 
         // Moves every file offset in an iloc box (construction method 0) that points behind the old
-        // meta box.
+        // meta box by delta bytes: forward when the meta box grew, back when it shrank.
         private static void ShiftItemLocations(byte[] iloc, int oldMetaEnd, int delta)
         {
             int version = iloc[8];
@@ -501,7 +800,7 @@ namespace PSImageConverter
                     baseOffset = ReadULong(iloc, position, baseOffsetSize);
                     if (fileOffsets && baseOffset >= (ulong)oldMetaEnd)
                     {
-                        WriteULong(iloc, position, baseOffset + (ulong)delta, baseOffsetSize);
+                        WriteULong(iloc, position, (ulong)((long)baseOffset + delta), baseOffsetSize);
                         baseShifted = true;
                     }
                 }
@@ -517,7 +816,7 @@ namespace PSImageConverter
                         ulong offset = ReadULong(iloc, position, offsetSize);
                         if (fileOffsets && !baseShifted && baseOffset + offset >= (ulong)oldMetaEnd)
                         {
-                            WriteULong(iloc, position, offset + (ulong)delta, offsetSize);
+                            WriteULong(iloc, position, (ulong)((long)offset + delta), offsetSize);
                         }
                     }
 

@@ -6,13 +6,13 @@ using System.Runtime.Versioning;
 namespace PSImageConverter
 {
     /// <summary>
-    /// The HEIC encoder of Windows: the WIC HEIF encoder of the "HEIF Image Extensions", which
+    /// The HEIC encoder of Windows: the WIC HEIF encoder of the "HEIF Image Extension", which
     /// compresses with the HEVC encoder of the "HEVC Video Extensions". Every call creates its own WIC
     /// factory and releases every COM object it created, so calls on several threads (the STA thread of
     /// the console, the MTA threads of ForEach-Object -Parallel) share no COM object.
     /// </summary>
     /// <remarks>
-    /// How the encoder behaves (HEIF Image Extensions 1.2.62, HEVC Video Extensions 2.5.48) and how
+    /// How the encoder behaves (HEIF Image Extension 1.2.62, HEVC Video Extensions 2.5.48) and how
     /// this class keeps clear of it:
     /// - Up to a long side of 1920 pixels it writes one coded image, above that a grid of 512x512
     ///   tiles. The single coded image fails or ends the process for some sizes: an access violation
@@ -39,7 +39,7 @@ namespace PSImageConverter
     {
         /// <summary>
         /// The longest side the encoder takes: CommitFrame fails with 0xC00D36B4 for a grid side of 45
-        /// tiles (23040 pixels) or more, measured with HEIF Image Extensions 1.2.62.
+        /// tiles (23040 pixels) or more, measured with HEIF Image Extension 1.2.62.
         /// </summary>
         internal const int MaximumSide = 44 * GridTileSize;
 

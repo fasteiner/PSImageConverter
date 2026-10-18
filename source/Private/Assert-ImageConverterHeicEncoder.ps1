@@ -13,7 +13,7 @@ function Assert-ImageConverterHeicEncoder
         message gives the reason, says what to install on this platform (Windows: the HEVC Video
         Extensions from the Microsoft Store; Linux: libheif with its HEVC encoder x265, built in or as
         a plugin, with the apt commands and a pointer to about_PSImageConverter for the other
-        distributions; macOS: the macOS version and an HEVC encoder) and suggests -Format Avif,
+        distributions; macOS: a Mac that provides an HEVC encoder) and suggests -Format Avif,
         which needs nothing installed.
 
         .PARAMETER Cmdlet
@@ -56,7 +56,7 @@ function Assert-ImageConverterHeicEncoder
     $advice = @{
         Windows = "Install the 'HEVC Video Extensions' from the Microsoft Store (Windows 10 1809 or later, ms-windows-store://pdp/?ProductId=9NMZLZ57R3T7), and the 'HEIF Image Extension' (ms-windows-store://pdp/?ProductId=9PMMSR1CGPWG) if it is missing too, then start a new PowerShell session."
         Linux   = "Install libheif with its HEVC encoder x265, e.g. 'sudo apt install libheif1 libheif-plugin-x265' on Ubuntu 24.04 and 26.04 and Debian 13 ('sudo apt install libheif1' on Ubuntu 22.04 and Debian 12; for Fedora, Arch and Alpine see 'Get-Help about_PSImageConverter'), then start a new PowerShell session."
-        macOS   = 'ImageIO writes HEIC on macOS 10.13 or later, on a Mac that provides an HEVC encoder; virtual machines often have none.'
+        macOS   = 'ImageIO writes HEIC on every macOS that runs PowerShell 7.4, on a Mac that provides an HEVC encoder.'
     }[$status.Platform]
 
     $message = "HEIC cannot be written on this computer: the module uses the HEVC encoder of the operating system and ships none of its own. $($status.Reason) $advice Or use -Format Avif, which stores the image in the same HEIF container with the royalty-free AV1 codec and needs nothing installed."

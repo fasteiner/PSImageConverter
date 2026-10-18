@@ -14,8 +14,9 @@ namespace PSImageConverter
     /// <remarks>
     /// Every function called here exists in libheif 1.12 (Ubuntu 22.04); the structures passed
     /// (heif_error, heif_writer, the version 1 fields of heif_color_profile_nclx) have the same layout
-    /// from 1.12 to 1.23. heif_init exists from 1.13 on and is called when it is there. .NET loads libheif without exporting its symbols to the process,
-    /// so the libheif built into Magick.NET's native library and the system libheif do not mix.
+    /// from 1.12 to 1.23. heif_init exists from 1.13 on and is called when it is there. .NET loads
+    /// libheif without exporting its symbols to the process, so the libheif built into Magick.NET's
+    /// native library and the system libheif do not mix.
     /// </remarks>
     internal static class LibHeifHeicEncoder
     {
@@ -45,10 +46,32 @@ namespace PSImageConverter
         private const int NclxMatrixOffset = 12;
         private const int NclxFullRangeOffset = 16;
 
-        // Magick.NET 14.17.2 cannot decode an HEVC slice larger than about 16 MiB (16,117,086 bytes
-        // decode, 16,956,306 do not; the system libheif decodes both). Random noise costs x265 up to
-        // 1.6 bytes per pixel, so x265 is asked for one slice per 8 megapixels.
-        private const long PixelsPerSlice = 8_000_000;
+        // Magick.NET 14.17.2 cannot decode an HEVC slice larger than 16 MiB (a slice of 16,764,740
+        // bytes decodes, one of 16,777,499 bytes does not; the system libheif decodes both). So an
+        // image is encoded as one slice, as x265 writes it by default, and again in several only when
+        // that slice is larger than this limit, which keeps a margin of about 10 % below 16 MiB for a
+        // Magick.NET version whose decoder counts a few more bytes against its limit.
+        private const int MaximumSliceLength = 15_000_000;
+
+        // x265 4.1 creates no thread pool of its own where the NUMA memory-policy calls are denied, as
+        // in a container with Docker's default seccomp profile: it then encodes on one thread (a
+        // 12-megapixel photo about five times more slowly) and corrupts its heap (the process aborts
+        // or hangs) when it encodes several slices. A pool size given as a number makes it create a
+        // pool there too, but then it writes about one line "unable to set thread affinity for NUMA
+        // node mask" per thread to the console, which PowerShell cannot redirect. So images above
+        // this size and images of several slices get a pool; smaller images and the probe stay quiet
+        // and are encoded on one thread there. Where the calls are allowed, the pool changes nothing.
+        private const long ThreadPoolPixels = 8_000_000;
+
+        // x265 3.5 and 4.1 crash (segmentation fault, also in heif-enc) when asked for 14 slices or
+        // more; 13 encode and decode. x265 itself lowers the count to the rows of coding blocks.
+        private const int MaximumSlices = 13;
+
+        // The encode with one slice, then up to two with the estimated number of slices, then one
+        // with MaximumSlices. x265 cuts an image into slices of nearly the same number of rows of
+        // coding blocks, so the slices of an image with evenly spread detail have nearly the same
+        // size, and the first estimate fits.
+        private const int MaximumEncodes = 4;
 
         // libheif picks a 16-pixel coding block for an image with a side shorter than 32 pixels; x265
         // then rejects a long other side (4097x16 encodes, 4352x16 does not), and libheif 1.12 writes
@@ -76,6 +99,14 @@ namespace PSImageConverter
 
         internal static byte[] Encode(int width, int height, byte[] pixels, int channels, int quality, byte[] iccProfile, byte[] exif, byte[] xmp)
         {
+            return Encode(width, height, pixels, channels, quality, iccProfile, exif, xmp, MaximumSliceLength);
+        }
+
+        // maximumSliceLength: the largest slice in bytes that the file may have. The tests pass a
+        // small one (through reflection), so that a small image takes the paths that a real image
+        // takes only from about 10 megapixels of random noise on.
+        internal static byte[] Encode(int width, int height, byte[] pixels, int channels, int quality, byte[] iccProfile, byte[] exif, byte[] xmp, int maximumSliceLength)
+        {
             EnsureInitialized();
 
             if (Math.Max(width, height) > MaximumSide)
@@ -88,46 +119,61 @@ namespace PSImageConverter
                 throw new HeicEncoderException(string.Format("The HEVC encoder of libheif cannot encode an image of {0}x{1} pixels: with a side shorter than {2} pixels the other side can have at most {3} pixels.", width, height, ThinSide, ThinMaximumLength));
             }
 
-            IntPtr context = IntPtr.Zero;
-            IntPtr encoder = IntPtr.Zero;
             IntPtr image = IntPtr.Zero;
-            IntPtr handle = IntPtr.Zero;
-            GCHandle output = default;
-
             try
             {
-                context = heif_context_alloc();
-                if (context == IntPtr.Zero)
+                image = CreateImage(width, height, pixels, channels, iccProfile);
+                bool largeImage = (long)width * height > ThreadPoolPixels;
+
+                // One slice first (see MaximumSliceLength); more only when a slice is too large for
+                // Magick.NET. A slice count that x265 lowered to the rows of the image, or
+                // MaximumSlices, cannot be raised further.
+                int requested = 1;
+                for (int encodes = 1; ; encodes++)
                 {
-                    throw new OutOfMemoryException("heif_context_alloc returned NULL.");
-                }
+                    byte[] file = EncodeImage(image, quality, exif, xmp, requested, largeImage || requested > 1, out string encoderName);
+                    (int slices, int largest) = HeifBoxEditor.MeasureSlices(file);
+                    if (largest <= maximumSliceLength)
+                    {
+                        // libheif 1.17 and older store every slice as an extent of its own, which
+                        // Windows' own HEIF decoder refuses; these extents follow each other in the
+                        // file and become one. libheif writes the nclx values into the HEVC stream, but
+                        // no nclx box next to an ICC profile (two colour boxes need encoding options,
+                        // whose layout differs between versions).
+                        return HeifBoxEditor.AddNclx(HeifBoxEditor.MergeContiguousExtents(file), 1, 13, 1, true, true);
+                    }
 
-                // libheif 1.17 without an HEVC plugin returns code 3 (unsupported file type), subcode 0.
-                HeifError error = heif_context_get_encoder_for_format(context, HeifCompressionHevc, out encoder);
-                if (error.Code != HeifErrorOk || encoder == IntPtr.Zero)
+                    if (!IsX265(encoderName))
+                    {
+                        throw new HeicEncoderException(string.Format("The HEVC encoder of libheif, {0}, wrote a slice of {1} bytes for an image of {2}x{3} pixels; for Magick.NET to read the file back (it reads slices up to 16 MiB), a slice may have at most {4} bytes, and only x265 can be asked for several slices. A lower quality or a smaller image needs fewer bytes.", encoderName, largest, width, height, maximumSliceLength));
+                    }
+
+                    if (slices < requested || requested >= MaximumSlices)
+                    {
+                        throw new HeicEncoderException(string.Format("x265 wrote a slice of {0} bytes in {1} slices of an image of {2}x{3} pixels; for Magick.NET to read the file back (it reads slices up to 16 MiB), a slice may have at most {4} bytes, and x265 writes no more slices for this image. A lower quality or a smaller image needs fewer bytes.", largest, slices, width, height, maximumSliceLength));
+                    }
+
+                    // An eighth more slices than the size alone asks for, for rows that cost more than
+                    // others; the last encode gets the most slices x265 writes.
+                    long estimate = (((long)requested * largest * 9 / 8) + maximumSliceLength - 1) / maximumSliceLength;
+                    requested = encodes + 1 >= MaximumEncodes ? MaximumSlices : (int)Math.Min(MaximumSlices, Math.Max(requested + 1, estimate));
+                }
+            }
+            finally
+            {
+                if (image != IntPtr.Zero)
                 {
-                    string plugins = pluginLoadingError == null ? string.Empty : "; loading its plugins failed: " + pluginLoadingError;
-                    throw new HeicEncoderException(string.Format("libheif {0} has no HEVC encoder ({1}){2}.", FormatVersion(heif_get_version_number()), MessageOf(error), plugins), true);
+                    heif_image_release(image);
                 }
+            }
+        }
 
-                // x265: CRF = (100 - quality) / 2.
-                Check(heif_encoder_set_lossy_quality(encoder, quality), "heif_encoder_set_lossy_quality");
-
-                long area = (long)width * height;
-                string encoderName = Marshal.PtrToStringUTF8(heif_encoder_get_name(encoder)) ?? string.Empty;
-                if (area > PixelsPerSlice && encoderName.StartsWith("x265", StringComparison.Ordinal))
-                {
-                    string slices = ((area + PixelsPerSlice - 1) / PixelsPerSlice).ToString(CultureInfo.InvariantCulture);
-                    Check(heif_encoder_set_parameter_string(encoder, "x265:slices", slices), "heif_encoder_set_parameter_string(x265:slices)");
-
-                    // x265 4.1 corrupts its heap (the process aborts or hangs) when it encodes several
-                    // slices without a thread pool, and it creates no pool of its own where the NUMA
-                    // memory-policy calls are denied, as in a container with Docker's default seccomp
-                    // profile. A pool size given as a number makes it create one there too.
-                    string pools = Environment.ProcessorCount.ToString(CultureInfo.InvariantCulture);
-                    Check(heif_encoder_set_parameter_string(encoder, "x265:pools", pools), "heif_encoder_set_parameter_string(x265:pools)");
-                }
-
+        // The pixels as an interleaved RGB or RGBA heif_image with the ICC profile and the nclx values.
+        private static IntPtr CreateImage(int width, int height, byte[] pixels, int channels, byte[] iccProfile)
+        {
+            IntPtr image = IntPtr.Zero;
+            try
+            {
                 Check(heif_image_create(width, height, HeifColorspaceRgb, channels == 4 ? HeifChromaInterleavedRgba : HeifChromaInterleavedRgb, out image), "heif_image_create");
                 Check(heif_image_add_plane(image, HeifChannelInterleaved, width, height, 8), "heif_image_add_plane");
 
@@ -150,6 +196,65 @@ namespace PSImageConverter
                 }
 
                 SetNclx(image);
+                IntPtr result = image;
+                image = IntPtr.Zero;
+                return result;
+            }
+            finally
+            {
+                if (image != IntPtr.Zero)
+                {
+                    heif_image_release(image);
+                }
+            }
+        }
+
+        // Encodes the image in a context of its own, in the given number of slices, and returns the
+        // HEIF file with the EXIF and XMP items. threadPool: give x265 a pool of one thread per
+        // processor (see ThreadPoolPixels). libheif does not change the image, so it is encoded again
+        // as it is.
+        private static byte[] EncodeImage(IntPtr image, int quality, byte[] exif, byte[] xmp, int slices, bool threadPool, out string encoderName)
+        {
+            IntPtr context = IntPtr.Zero;
+            IntPtr encoder = IntPtr.Zero;
+            IntPtr handle = IntPtr.Zero;
+            GCHandle output = default;
+
+            try
+            {
+                context = heif_context_alloc();
+                if (context == IntPtr.Zero)
+                {
+                    throw new OutOfMemoryException("heif_context_alloc returned NULL.");
+                }
+
+                // libheif 1.17 without an HEVC plugin returns code 3 (unsupported file type), subcode 0.
+                HeifError error = heif_context_get_encoder_for_format(context, HeifCompressionHevc, out encoder);
+                if (error.Code != HeifErrorOk || encoder == IntPtr.Zero)
+                {
+                    string plugins = pluginLoadingError == null ? string.Empty : "; loading its plugins failed: " + pluginLoadingError;
+                    throw new HeicEncoderException(string.Format("libheif {0} has no HEVC encoder ({1}){2}.", FormatVersion(heif_get_version_number()), MessageOf(error), plugins), true);
+                }
+
+                // x265: CRF = (100 - quality) / 2.
+                Check(heif_encoder_set_lossy_quality(encoder, quality), "heif_encoder_set_lossy_quality");
+
+                // Encode asks for several slices only from x265; the parameters of other encoders
+                // have other names.
+                encoderName = Marshal.PtrToStringUTF8(heif_encoder_get_name(encoder)) ?? string.Empty;
+                if (IsX265(encoderName))
+                {
+                    if (slices > 1)
+                    {
+                        Check(heif_encoder_set_parameter_string(encoder, "x265:slices", slices.ToString(CultureInfo.InvariantCulture)), "heif_encoder_set_parameter_string(x265:slices)");
+                    }
+
+                    if (threadPool)
+                    {
+                        string pools = Environment.ProcessorCount.ToString(CultureInfo.InvariantCulture);
+                        Check(heif_encoder_set_parameter_string(encoder, "x265:pools", pools), "heif_encoder_set_parameter_string(x265:pools)");
+                    }
+                }
 
                 // NULL options: the layout of heif_encoding_options differs between versions.
                 Check(heif_context_encode_image(context, image, encoder, IntPtr.Zero, out handle), "heif_context_encode_image");
@@ -170,10 +275,7 @@ namespace PSImageConverter
                 output = GCHandle.Alloc(chunks);
                 HeifWriter writer = new HeifWriter { WriterApiVersion = 1, Write = WritePointer };
                 Check(heif_context_write(context, ref writer, GCHandle.ToIntPtr(output)), "heif_context_write");
-
-                // libheif writes the nclx values into the HEVC stream, but no nclx box next to an ICC
-                // profile (two colour boxes need encoding options, whose layout differs between versions).
-                return HeifBoxEditor.AddNclx(Concat(chunks), 1, 13, 1, true, true);
+                return Concat(chunks);
             }
             finally
             {
@@ -187,11 +289,6 @@ namespace PSImageConverter
                     heif_image_handle_release(handle);
                 }
 
-                if (image != IntPtr.Zero)
-                {
-                    heif_image_release(image);
-                }
-
                 if (encoder != IntPtr.Zero)
                 {
                     heif_encoder_release(encoder);
@@ -202,6 +299,12 @@ namespace PSImageConverter
                     heif_context_free(context);
                 }
             }
+        }
+
+        // x265 gives its name with its version, e.g. "x265 HEVC encoder (3.5+1-f0c1022b6)".
+        private static bool IsX265(string encoderName)
+        {
+            return encoderName.StartsWith("x265", StringComparison.Ordinal);
         }
 
         private static void EnsureInitialized()

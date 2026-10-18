@@ -90,7 +90,7 @@ namespace PSImageConverter
         /// <returns>The encoded HEIC file.</returns>
         /// <exception cref="ArgumentNullException"><paramref name="pixels"/> is null.</exception>
         /// <exception cref="ArgumentException">The size, the length of the pixel buffer, the channel count or the quality is out of range.</exception>
-        /// <exception cref="HeicEncoderException">The encoder of the operating system is missing, rejected the image (e.g. a side longer than it can encode) or failed in another way. Errors that did not come from the encoder itself (a missing native function, too little memory, a HEIF structure the box editor does not expect, a COM error) are wrapped: the original error is the inner exception.</exception>
+        /// <exception cref="HeicEncoderException">The encoder of the operating system is missing, rejected the image (e.g. a side longer than it can encode, or on Linux an image whose HEVC slices x265 cannot keep small enough for Magick.NET to read the file back) or failed in another way. Errors that did not come from the encoder itself (a missing native function, too little memory, a HEIF structure the box editor does not expect, a COM error) are wrapped: the original error is the inner exception.</exception>
         public static byte[] Encode(int width, int height, byte[] pixels, int channels, int quality, byte[] iccProfile, byte[] exif, byte[] xmp)
         {
             CheckArguments(width, height, pixels, channels, quality);
