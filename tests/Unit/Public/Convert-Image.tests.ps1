@@ -1,3 +1,13 @@
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', 'heicAvailable', Justification = 'Set in BeforeDiscovery and read by the -Skip expressions, which PSScriptAnalyzer does not see.')]
+param ()
+
+BeforeDiscovery {
+    Import-Module -Name 'PSImageConverter'
+
+    # The tests that write HEIC run only where the encoder of the operating system works; the probe runs once per process.
+    $heicAvailable = $null -eq [PSImageConverter.HeicEncoder]::GetUnavailableReason()
+}
+
 BeforeAll {
     $script:moduleName = 'PSImageConverter'
     Import-Module -Name $script:moduleName
@@ -923,10 +933,6 @@ Describe 'Convert-Image' {
                 #>
                 function Use-RealMethodInvoker
                 {
-                    InModuleScope -ModuleName $script:moduleName {
-                        $null = Invoke-ImageConverterMethod -Type ([System.Object])
-                    }
-
                     Mock -ModuleName $script:moduleName -CommandName Invoke-ImageConverterMethod -MockWith {
                         $target = $null
                         $methodType = $Type
@@ -2259,6 +2265,58 @@ Describe 'Convert-Image' {
             $result = Convert-Image -LiteralPath $exifSource.FullName -Format $Format -DestinationPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out') -WarningAction SilentlyContinue
 
             (Get-ImageInfo -LiteralPath $result.FullName).HasExif | Should -Be $keepsExif
+        }
+
+        It 'Should write EXIF data to Heic output exactly when the format table says so, and warn otherwise' -Skip:(-not $heicAvailable) {
+            $exifSource = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'exif.jpg') -Exif
+            $keepsExif = InModuleScope -ModuleName $script:moduleName { (Get-ImageConverterFormatInfo -Format 'Heic').KeepsExif }
+
+            $result = Convert-Image -LiteralPath $exifSource.FullName -Format Heic -WarningAction SilentlyContinue -WarningVariable conversionWarning
+
+            (Get-ImageInfo -LiteralPath $result.FullName).HasExif | Should -Be $keepsExif
+            ($conversionWarning.Count -eq 0) | Should -Be $keepsExif
+        }
+    }
+
+    Context 'When writing HEIC' {
+        It 'Should stop the call with one terminating HeicEncoderNotAvailable error of Convert-Image before any file is read when the encoder is missing, WhatIf <WhatIf>' -ForEach @(
+            @{ WhatIf = $false }
+            @{ WhatIf = $true }
+        ) {
+            Mock -ModuleName $script:moduleName -CommandName Get-ImageConverterHeicEncoderStatus -MockWith {
+                [PSCustomObject] @{ IsAvailable = $false; Reason = 'Windows has no HEIF encoder: WIC CreateEncoder failed with HRESULT 0x88982F50.'; Platform = 'Windows' }
+            }
+            Mock -ModuleName $script:moduleName -CommandName Read-ImageConverterImage
+            $errorCount = $global:Error.Count
+            $result = $null
+            $caught = $null
+
+            try
+            {
+                $result = Convert-Image -LiteralPath $script:source -Format heic -WhatIf:$WhatIf -ErrorAction SilentlyContinue -ErrorVariable conversionError
+            }
+            catch
+            {
+                $caught = $_
+            }
+
+            $caught.FullyQualifiedErrorId | Should -Be 'HeicEncoderNotAvailable,Convert-Image'
+            $caught.CategoryInfo.Category | Should -Be 'NotInstalled'
+            $caught.TargetObject | Should -BeExactly 'Heic'
+            "$caught" | Should -BeLike "*Windows has no HEIF encoder*'HEVC Video Extensions' from the Microsoft Store*-Format Avif*"
+            $global:Error.Count - $errorCount | Should -Be 1
+            $conversionError | Should -HaveCount 1
+            $result | Should -BeNullOrEmpty
+            Should -Invoke -ModuleName $script:moduleName -CommandName Read-ImageConverterImage -Times 0 -Exactly
+        }
+
+        It 'Should write a HEIC file with Convert-Image -Format Heic' -Skip:(-not $heicAvailable) {
+            $png = New-TestImage -Path (Join-Path -Path $script:tempDir.FullName -ChildPath 'photo.png') -Format Png
+
+            $result = Convert-Image -LiteralPath $png.FullName -Format Heic -Quality 80
+
+            $result.Name | Should -Be 'photo.heic'
+            (Get-ImageInfo -LiteralPath $result.FullName).Format | Should -Be 'Heic'
         }
     }
 }

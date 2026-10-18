@@ -2,7 +2,8 @@ function Convert-ImageConverterImage
 {
     <#
         .SYNOPSIS
-        Converts a single image file with Magick.NET and returns the written file.
+        Converts a single image file with Magick.NET (and HEIC output with the encoder of the
+        operating system) and returns the written file.
 
         .DESCRIPTION
         Reads the first frame of the source image, applies the EXIF orientation to the pixels
@@ -11,33 +12,37 @@ function Convert-ImageConverterImage
         space), converts CMYK pixels to sRGB for formats that cannot store CMYK, converts the
         pixels of a source with an ICC profile that matches them (colour or grey) to sRGB for
         lossy Jxl output (Quality below 100), whose encoder stores no ICC profile, and grey
-        pixels with a grey profile to sRGB for WebP, Avif, Bmp and Gif output, which store grey
-        pixels as RGB; a grey JPEG XL source, which ImageMagick reads as sRGB, counts as grey.
+        pixels with a grey profile to sRGB for WebP, Avif, Heic, Bmp and Gif output, which store
+        grey pixels as RGB; a grey JPEG XL source, which ImageMagick reads as sRGB, counts as grey.
         A profile made for other pixels (a grey profile in a colour image or the other way
         round) is left out of lossless Jxl output, which cannot be written with it, and a grey
         profile on colour pixels out of Avif and Bmp output, which browsers then show wrongly,
+        out of Heic output, whose encoders get RGB pixels,
         and out of Jpeg, Png and Tiff output when the pixels are all neutral grey, which these
         formats store as grey. After the profile is replaced or left out, the icc:* properties
         that describe the source profile are removed. Optionally strips the metadata but keeps
         the ICC colour profile (the one left after these steps), flattens transparent pixels
-        onto white for Jpeg output (CMYK white for a CMYK image), writes Tiff output of an image
-        with alpha with at least 8 bits per sample, sets the quality for lossy output formats
-        and writes the image in the requested format; Png output gets the ICC profile only as
-        iCCP chunk, and Png, Jpeg and Tiff output are stored as RGB when an RGB profile is kept
-        for neutral grey pixels. The image is
-        written into a temporary file in the target folder first, through a stream so
-        ImageMagick does not interpret the file name, and then moved over the target, so a
-        failed or stopped conversion never leaves a truncated target file or the temporary file
+        onto white for the formats without alpha (Jpeg, CMYK white for a CMYK image; Heic on
+        Windows), writes Tiff output of an image with alpha with at least 8 bits per sample,
+        sets the quality for lossy output formats and writes the image in the requested format;
+        Png output gets the ICC profile only as iCCP chunk, and Png, Jpeg and Tiff output are
+        stored as RGB when an RGB profile is kept for neutral grey pixels. Heic output is
+        encoded by the encoder of the operating system (Invoke-ImageConverterHeicEncoder) from
+        the pixels, the ICC profile, the EXIF block with orientation 1 and the XMP packet. The
+        image is written into a temporary file in the target folder first, through a stream so
+        neither ImageMagick nor the HEIC encoder sees the file name, and then moved over the
+        target, so a failed or stopped conversion never leaves a truncated target file or the temporary file
         behind; the target folder is created when it does not exist. With Force, the ReadOnly
         and Hidden attributes of an existing target are cleared before it is replaced and
         restored when it cannot be replaced.
         Failures are written as non-terminating errors through the cmdlet passed in -Cmdlet:
         ImageReadFailed when the source cannot be read, ImageWriteFailed when the target
-        cannot be written. Warnings are written through the same cmdlet: when ImageMagick
+        cannot be written (also when the HEIC encoder rejects the image, e.g. a size it cannot
+        encode). Warnings are written through the same cmdlet: when ImageMagick
         reports the source as damaged (it is converted anyway; a warning that the caller turns
         into a stop still disposes the decoded image), when the source has more than one frame
         and only the first is converted, and, for output formats that cannot carry EXIF data
-        (Tiff, Bmp, Gif), when the source has EXIF data and StripMetadata is not set.
+        (Tiff, Bmp, Gif; Heic on macOS), when the source has EXIF data and StripMetadata is not set.
         Returns the written file as the FileSystem provider returns it (a FileInfo with PSPath),
         or nothing after a failure.
 
@@ -54,12 +59,12 @@ function Convert-ImageConverterImage
         The output format name as accepted by Convert-Image -Format, e.g. Jpeg or WebP.
 
         .PARAMETER Quality
-        The quality (1-100) applied to lossy output formats (Jpeg, WebP, Avif, Jxl).
+        The quality (1-100) applied to lossy output formats (Jpeg, WebP, Avif, Heic, Jxl).
 
         .PARAMETER StripMetadata
         Removes EXIF, XMP, IPTC and comments from the output but keeps the ICC colour profile,
         except where the pixels are converted to sRGB instead (lossy Jxl; grey pixels with a
-        grey profile in WebP, Avif, Bmp and Gif output) or the profile is left out (see the
+        grey profile in WebP, Avif, Heic, Bmp and Gif output) or the profile is left out (see the
         description: a profile that cannot be applied or one made for other pixels).
 
         .PARAMETER Force
@@ -87,7 +92,7 @@ function Convert-ImageConverterImage
         $TargetPath,
 
         [Parameter(Mandatory = $true)]
-        [ValidateSet('Jpeg', 'Png', 'WebP', 'Avif', 'Jxl', 'Tiff', 'Bmp', 'Gif')]
+        [ValidateSet('Jpeg', 'Png', 'WebP', 'Avif', 'Heic', 'Jxl', 'Tiff', 'Bmp', 'Gif')]
         [System.String]
         $Format,
 
@@ -226,8 +231,8 @@ function Convert-ImageConverterImage
                 wide-gamut photo (Adobe RGB, Display P3) would look washed out. WebP, Avif, Bmp and
                 Gif store grey pixels as RGB, for which a grey profile is not valid: browsers show
                 the raw grey levels of the WebP and Gif, Chrome and Edge do not display the Avif and
-                Firefox renders the Bmp black. In both cases the pixels are converted to sRGB
-                instead; colours outside sRGB are clipped.
+                Firefox renders the Bmp black. The HEIC encoders get RGB pixels as well. In both
+                cases the pixels are converted to sRGB instead; colours outside sRGB are clipped.
             #>
             $toSrgbReason = $null
             if ($isLossyJxl)
@@ -249,14 +254,16 @@ function Convert-ImageConverterImage
                     (UnableToWriteImageData), and browsers do not show an Avif or Bmp whose colour pixels
                     carry a grey profile correctly (Chrome and Edge do not display the Avif and show
                     false colours for the Bmp, Firefox shows both grey), so the profile is left out of
-                    these outputs. The Jpeg, Png and Tiff encoders store colour pixels that are all
-                    neutral grey as grey, for which the grey profile is valid and would then be applied.
+                    these outputs, and out of Heic output, whose encoders get RGB pixels (ImageIO
+                    cannot even create the image with it). The Jpeg, Png and Tiff encoders store colour
+                    pixels that are all neutral grey as grey, for which the grey profile is valid and
+                    would then be applied.
                 #>
                 if ($isLossyJxl)
                 {
                     Write-Verbose -Message "The ICC colour profile is made for $profileKind pixels and does not match the image, so the colours are written unchanged: $SourcePath"
                 }
-                elseif ($Format -eq 'Jxl' -or ($profileIsGray -and $Format -in @('Avif', 'Bmp')) -or ($profileIsGray -and $Format -in @('Jpeg', 'Png', 'Tiff') -and $image.DetermineColorType() -in $grayTypes))
+                elseif ($Format -eq 'Jxl' -or ($profileIsGray -and $Format -in @('Avif', 'Heic', 'Bmp')) -or ($profileIsGray -and $Format -in @('Jpeg', 'Png', 'Tiff') -and $image.DetermineColorType() -in $grayTypes))
                 {
                     $image.RemoveProfile('icc')
                     $profileReplaced = $true
@@ -314,13 +321,14 @@ function Convert-ImageConverterImage
             }
         }
 
-        if ($Format -eq 'Jpeg' -and $image.HasAlpha)
+        if (-not $formatInfo.KeepsAlpha -and $image.HasAlpha)
         {
             <#
-                JPEG has no alpha channel; without this the colour stored under transparent pixels
-                (often black) would show. ImageMagick uses the numbers of the background colour as
-                they are in the image's colour space, so a CMYK image (Jpeg keeps CMYK) needs the
-                CMYK white C=M=Y=K=0; sRGB white would be full cyan, magenta and yellow ink there.
+                JPEG has no alpha channel, and the HEIC encoder of Windows takes opaque pixels only;
+                without this the colour stored under transparent pixels (often black) would show.
+                ImageMagick uses the numbers of the background colour as they are in the image's
+                colour space, so a CMYK image (Jpeg keeps CMYK) needs the CMYK white C=M=Y=K=0; sRGB
+                white would be full cyan, magenta and yellow ink there.
             #>
             $background = [ImageMagick.MagickColors]::White
             if ($image.ColorSpace -eq [ImageMagick.ColorSpace]::CMYK)
@@ -419,6 +427,17 @@ function Convert-ImageConverterImage
             {
                 $png = Select-ImageConverterPngChunk -Data $encoded.Result -ExcludeTextKeyword 'Raw profile type icc', 'Raw profile type icm'
                 $failure = (Invoke-ImageConverterMethod -InputObject $stream -Name 'Write' -ArgumentList $png, 0, $png.Length).Exception
+            }
+        }
+        elseif ($null -eq $failure -and $Format -eq 'Heic')
+        {
+            # Magick.NET cannot write HEIC. The encoder of the operating system encodes into memory and never sees the target name.
+            $encoded = Invoke-ImageConverterHeicEncoder -Image $image -Quality $Quality
+            $failure = $encoded.Exception
+
+            if ($null -eq $failure)
+            {
+                $failure = (Invoke-ImageConverterMethod -InputObject $stream -Name 'Write' -ArgumentList $encoded.Result, 0, $encoded.Result.Length).Exception
             }
         }
         elseif ($null -eq $failure)

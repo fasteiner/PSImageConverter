@@ -8,15 +8,17 @@ AfterAll {
 }
 
 Describe 'Get-ImageConverterFormatInfo' {
-    It 'Should return extension <Extension>, IsLossy <IsLossy>, KeepsExif <KeepsExif>, SupportsCmyk <SupportsCmyk> and StoresGray <StoresGray> for <Format>' -ForEach @(
-        @{ Format = 'Jpeg'; Extension = '.jpg'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $true; StoresGray = $true }
-        @{ Format = 'Png'; Extension = '.png'; IsLossy = $false; KeepsExif = $true; SupportsCmyk = $false; StoresGray = $true }
-        @{ Format = 'WebP'; Extension = '.webp'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $false; StoresGray = $false }
-        @{ Format = 'Avif'; Extension = '.avif'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $false; StoresGray = $false }
-        @{ Format = 'Jxl'; Extension = '.jxl'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $false; StoresGray = $true }
-        @{ Format = 'Tiff'; Extension = '.tif'; IsLossy = $false; KeepsExif = $false; SupportsCmyk = $true; StoresGray = $true }
-        @{ Format = 'Bmp'; Extension = '.bmp'; IsLossy = $false; KeepsExif = $false; SupportsCmyk = $false; StoresGray = $false }
-        @{ Format = 'Gif'; Extension = '.gif'; IsLossy = $false; KeepsExif = $false; SupportsCmyk = $false; StoresGray = $false }
+    It 'Should return extension <Extension>, IsLossy <IsLossy>, KeepsExif <KeepsExif>, SupportsCmyk <SupportsCmyk>, StoresGray <StoresGray> and KeepsAlpha <KeepsAlpha> for <Format>' -ForEach @(
+        @{ Format = 'Jpeg'; Extension = '.jpg'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $true; StoresGray = $true; KeepsAlpha = $false }
+        @{ Format = 'Png'; Extension = '.png'; IsLossy = $false; KeepsExif = $true; SupportsCmyk = $false; StoresGray = $true; KeepsAlpha = $true }
+        @{ Format = 'WebP'; Extension = '.webp'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $false; StoresGray = $false; KeepsAlpha = $true }
+        @{ Format = 'Avif'; Extension = '.avif'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $false; StoresGray = $false; KeepsAlpha = $true }
+        # The WIC encoder of Windows stores no alpha channel, ImageIO of macOS writes no EXIF.
+        @{ Format = 'Heic'; Extension = '.heic'; IsLossy = $true; KeepsExif = -not $IsMacOS; SupportsCmyk = $false; StoresGray = $false; KeepsAlpha = -not $IsWindows }
+        @{ Format = 'Jxl'; Extension = '.jxl'; IsLossy = $true; KeepsExif = $true; SupportsCmyk = $false; StoresGray = $true; KeepsAlpha = $true }
+        @{ Format = 'Tiff'; Extension = '.tif'; IsLossy = $false; KeepsExif = $false; SupportsCmyk = $true; StoresGray = $true; KeepsAlpha = $true }
+        @{ Format = 'Bmp'; Extension = '.bmp'; IsLossy = $false; KeepsExif = $false; SupportsCmyk = $false; StoresGray = $false; KeepsAlpha = $true }
+        @{ Format = 'Gif'; Extension = '.gif'; IsLossy = $false; KeepsExif = $false; SupportsCmyk = $false; StoresGray = $false; KeepsAlpha = $true }
     ) {
         $result = InModuleScope -ModuleName $script:moduleName -Parameters @{ Format = $Format } {
             Get-ImageConverterFormatInfo -Format $Format
@@ -28,12 +30,14 @@ Describe 'Get-ImageConverterFormatInfo' {
         $result.KeepsExif | Should -Be $KeepsExif
         $result.SupportsCmyk | Should -Be $SupportsCmyk
         $result.StoresGray | Should -Be $StoresGray
+        $result.KeepsAlpha | Should -Be $KeepsAlpha
     }
 
     It 'Should return the name spelled as in the table for -Format <Given>' -ForEach @(
         @{ Given = 'webp'; Expected = 'WebP' }
         @{ Given = 'JXL'; Expected = 'Jxl' }
         @{ Given = 'jPeG'; Expected = 'Jpeg' }
+        @{ Given = 'HEIC'; Expected = 'Heic' }
     ) {
         $result = InModuleScope -ModuleName $script:moduleName -Parameters @{ Format = $Given } {
             Get-ImageConverterFormatInfo -Format $Format
@@ -46,7 +50,7 @@ Describe 'Get-ImageConverterFormatInfo' {
     It 'Should reject a format that cannot be written' {
         {
             InModuleScope -ModuleName $script:moduleName {
-                Get-ImageConverterFormatInfo -Format 'Heic'
+                Get-ImageConverterFormatInfo -Format 'Heif'
             }
         } | Should -Throw
     }
@@ -56,8 +60,8 @@ Describe 'Get-ImageConverterFormatInfo' {
             Get-ImageConverterFormatInfo
         }
 
-        $result.Format | Should -Be @('Jpeg', 'Png', 'WebP', 'Avif', 'Jxl', 'Tiff', 'Bmp', 'Gif')
-        $result.Extension | Should -Be @('.jpg', '.png', '.webp', '.avif', '.jxl', '.tif', '.bmp', '.gif')
+        $result.Format | Should -Be @('Jpeg', 'Png', 'WebP', 'Avif', 'Heic', 'Jxl', 'Tiff', 'Bmp', 'Gif')
+        $result.Extension | Should -Be @('.jpg', '.png', '.webp', '.avif', '.heic', '.jxl', '.tif', '.bmp', '.gif')
     }
 
     It 'Should list exactly the formats of this table in every -Format ValidateSet of the module' {

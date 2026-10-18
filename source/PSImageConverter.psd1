@@ -30,7 +30,7 @@
     Copyright            = '(c) Ing. Fabian Steiner BSc. All rights reserved.'
 
     # Description of the functionality provided by this module
-    Description          = 'Cross-platform PowerShell 7 module for converting images such as HEIC/HEIF photos to JPEG, PNG, WebP, AVIF and more, powered by Magick.NET. Pipeline-friendly; keeps the EXIF metadata in JPEG, PNG, WebP, AVIF and JPEG XL output.'
+    Description          = 'Cross-platform PowerShell 7 module for converting images such as HEIC/HEIF photos to JPEG, PNG, WebP, AVIF and more, powered by Magick.NET; writes HEIC with the HEVC encoder of the operating system. Pipeline-friendly; keeps the EXIF metadata in JPEG, PNG, WebP, AVIF and JPEG XL output.'
 
     # Minimum version of the PowerShell engine required by this module
     PowerShellVersion    = '7.4'
@@ -59,7 +59,7 @@
         PSData = @{
 
             # Tags applied to this module. These help with module discovery in online galleries.
-            Tags         = @('HEIC', 'HEIF', 'Image', 'Conversion', 'JPEG', 'PNG', 'WebP', 'AVIF', 'JpegXL', 'ImageMagick', 'MagickNET', 'Windows', 'Linux', 'MacOS', 'PSEdition_Core')
+            Tags         = @('HEIC', 'HEIF', 'HEVC', 'Image', 'Conversion', 'JPEG', 'PNG', 'WebP', 'AVIF', 'JpegXL', 'ImageMagick', 'MagickNET', 'Windows', 'Linux', 'MacOS', 'PSEdition_Core')
 
             # A URL to the license for this module.
             LicenseUri   = 'https://www.gnu.org/licenses/gpl-3.0.html'

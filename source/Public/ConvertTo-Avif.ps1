@@ -7,8 +7,9 @@ function ConvertTo-Avif
         .DESCRIPTION
         Converts one or more image files of any format Magick.NET can read (HEIC/HEIF, JPEG,
         PNG, WebP, TIFF, ...) to AVIF files with the extension .avif. AVIF uses the same
-        container as HEIC with the royalty-free AV1 codec, so it is the format to use while
-        writing HEIC is not supported. This is Convert-Image -Format Avif: all files of one call
+        container as HEIC with the royalty-free AV1 codec, whose encoder comes with the module,
+        so it works where ConvertTo-Heic finds no HEVC encoder of the operating system. This is
+        Convert-Image -Format Avif: all files of one call
         go through a single Convert-Image call, so output names, -Force, -WhatIf, the metadata
         handling and the error ids are the same, and errors are reported as coming from
         Convert-Image (FullyQualifiedErrorId '<Id>,Convert-Image'). Only a -DestinationPath that

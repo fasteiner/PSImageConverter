@@ -1,5 +1,13 @@
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', 'heicAvailable', Justification = 'Set in BeforeDiscovery and read by the -Skip expressions, which PSScriptAnalyzer does not see.')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidGlobalVars', '', Justification = 'The -ErrorVariable, -WarningVariable and -OutVariable +name tests append to a global variable, as the interactive prompt and pwsh -File scripts do.')]
 param ()
+
+BeforeDiscovery {
+    Import-Module -Name 'PSImageConverter'
+
+    # The tests that write HEIC run only where the encoder of the operating system works; the probe runs once per process.
+    $heicAvailable = $null -eq [PSImageConverter.HeicEncoder]::GetUnavailableReason()
+}
 
 BeforeAll {
     $script:moduleName = 'PSImageConverter'
@@ -670,6 +678,52 @@ Describe 'ConvertFrom-Heic' {
             $conversionError[0].FullyQualifiedErrorId | Should -Be 'PathNotFound,ConvertFrom-Heic'
             "$($conversionError[0])" | Should -BeLike "*so the module would use the global drive of that name, whose root is '$($globalRoot.FullName)'.*"
             Join-Path -Path $globalRoot.FullName -ChildPath 'IMG_0001.jpg' | Should -Not -Exist
+        }
+    }
+
+    Context 'When the output format is Heic' {
+        It 'Should stop the call with one terminating HeicEncoderNotAvailable error of ConvertFrom-Heic when the encoder is missing' {
+            Mock -ModuleName $script:moduleName -CommandName Get-ImageConverterHeicEncoderStatus -MockWith {
+                [PSCustomObject] @{ IsAvailable = $false; Reason = 'No encoder in this test.'; Platform = 'macOS' }
+            }
+            Mock -ModuleName $script:moduleName -CommandName Read-ImageConverterImage
+            $errorCount = $global:Error.Count
+            $caught = $null
+
+            try
+            {
+                $null = ConvertFrom-Heic -Path $script:source -Format Heic -DestinationPath (Join-Path -Path $script:tempDir.FullName -ChildPath 'out')
+            }
+            catch
+            {
+                $caught = $_
+            }
+
+            $caught.FullyQualifiedErrorId | Should -Be 'HeicEncoderNotAvailable,ConvertFrom-Heic'
+            $caught.TargetObject | Should -Be 'Heic'
+            "$caught" | Should -BeLike '*No encoder in this test. ImageIO writes HEIC on macOS 10.13 or later*-Format Avif*'
+            $global:Error.Count - $errorCount | Should -Be 1
+            Should -Invoke -ModuleName $script:moduleName -CommandName Read-ImageConverterImage -Times 0 -Exactly
+        }
+
+        It 'Should re-encode a HEIC file into -DestinationPath and refuse to overwrite the source' -Skip:(-not $heicAvailable) {
+            $destination = Join-Path -Path $script:tempDir.FullName -ChildPath 'smaller'
+
+            $copy = ConvertFrom-Heic -Path $script:source -Format Heic -Quality 40 -DestinationPath $destination
+            $same = ConvertFrom-Heic -LiteralPath $script:source -Format Heic -ErrorAction SilentlyContinue -ErrorVariable conversionError
+
+            $copy.Name | Should -Be 'IMG_0001.heic'
+            (Get-ImageInfo -LiteralPath $copy.FullName).Format | Should -Be 'Heic'
+            if ($IsLinux)
+            {
+                # IMG_0001.HEIC and IMG_0001.heic are two files on a case-sensitive file system.
+                $same.Name | Should -Be 'IMG_0001.heic'
+            }
+            else
+            {
+                $same | Should -BeNullOrEmpty
+                $conversionError[0].FullyQualifiedErrorId | Should -Be 'TargetIsSource,Convert-Image'
+            }
         }
     }
 }

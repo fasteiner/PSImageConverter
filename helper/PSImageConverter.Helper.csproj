@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Compiled helper code of the PSImageConverter module. Built by the Build_Helper task
+    (.build/Build-Helper.build.ps1), which copies PSImageConverter.Helper.dll into source/lib.
+    net8.0 is the runtime of PowerShell 7.4; the assembly also loads in the later releases on .NET 9 and 10.
+    No package references: the module ships this one DLL and nothing it depends on.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>PSImageConverter.Helper</AssemblyName>
+    <RootNamespace>PSImageConverter</RootNamespace>
+    <Product>PSImageConverter</Product>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+
+    <!-- The same sources give the same bytes: no pdb, no deps.json, no commit hash in the version. -->
+    <Deterministic>true</Deterministic>
+    <DebugType>none</DebugType>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <EnableSourceLink>false</EnableSourceLink>
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+
+    <!-- Every public member needs an XML doc comment (CS1591), with matching parameter names. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <WarningsAsErrors>$(WarningsAsErrors);CS1570;CS1572;CS1573;CS1574;CS1591</WarningsAsErrors>
+  </PropertyGroup>
+
+</Project>

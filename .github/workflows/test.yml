@@ -37,6 +37,18 @@ jobs:
         with:
           versionSpec: "5.x"
 
+      # The module writes HEIC with the encoder of the operating system; on Linux that is the libheif of
+      # the distribution with its x265 plugin, so the Linux encoder path runs in CI. The macOS runner has
+      # ImageIO, the Windows runner has no HEVC Video Extensions (the tests of the missing encoder run there).
+      # PSIC_EXPECT_HEIC_ENCODER makes a test fail when the encoder installed here does not work, instead of
+      # letting every HEIC test be skipped.
+      - name: Install libheif with the x265 HEVC encoder
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update && sudo apt-get install -y libheif1 libheif-plugin-x265
+          echo "PSIC_EXPECT_HEIC_ENCODER=1" >> "$GITHUB_ENV"
+
       - name: Build and test
         run: ./build.ps1 -ResolveDependency -Tasks build, test
 

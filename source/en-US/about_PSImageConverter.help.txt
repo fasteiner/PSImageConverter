@@ -6,21 +6,25 @@ SHORT DESCRIPTION
 
 LONG DESCRIPTION
     PSImageConverter converts images, for example HEIC/HEIF photos taken with
-    an iPhone, to JPEG, PNG, WebP, AVIF, JPEG XL, TIFF, BMP or GIF and reads
-    their metadata. The Magick.NET library and its native ImageMagick build are
-    bundled with the module, so no codecs need to be installed. It requires
+    an iPhone, to JPEG, PNG, WebP, AVIF, HEIC, JPEG XL, TIFF, BMP or GIF and
+    reads their metadata. The Magick.NET library and its native ImageMagick
+    build are bundled with the module, so no codecs need to be installed;
+    only HEIC output uses the HEVC encoder of the operating system (see
+    WRITING HEIC). It requires
     PowerShell 7.4 or later and runs on Windows, Linux and macOS (x64 and
     arm64; on Alpine/musl Linux x64 only).
 
     Cmdlets:
 
         Convert-Image     Converts every format Magick.NET can read to the
-                          -Format Jpeg, Png, WebP, Avif, Jxl (JPEG XL), Tiff,
-                          Bmp or Gif.
+                          -Format Jpeg, Png, WebP, Avif, Heic, Jxl (JPEG XL),
+                          Tiff, Bmp or Gif.
         ConvertTo-Jpeg    Convert-Image -Format Jpeg.
         ConvertTo-Png     Convert-Image -Format Png (lossless, no -Quality).
         ConvertTo-WebP    Convert-Image -Format WebP.
         ConvertTo-Avif    Convert-Image -Format Avif.
+        ConvertTo-Heic    Convert-Image -Format Heic (needs the HEVC encoder
+                          of the operating system, see WRITING HEIC).
         ConvertTo-JpegXL  Convert-Image -Format Jxl.
         ConvertFrom-Heic  Converts .heic/.heif/.hif files only; -Format
                           defaults to Jpeg.
@@ -31,12 +35,12 @@ LONG DESCRIPTION
     The conversion cmdlets take -Path (wildcards) or -LiteralPath (aliases
     PSPath and LP; files piped from Get-ChildItem and the objects of
     Get-ImageInfo bind here; folders are skipped), -DestinationPath, -Quality
-    (1 to 100, default 90, for Jpeg, WebP, Avif and Jxl), -StripMetadata,
+    (1 to 100, default 90, for Jpeg, WebP, Avif, Heic and Jxl), -StripMetadata,
     -Force, -WhatIf and -Confirm, and return a FileInfo object for every
     written file, the same object Get-Item returns, so it can be piped into
     the next cmdlet. The output gets the base name of the source and the
-    extension of the format (.jpg, .png, .webp, .avif, .jxl, .tif, .bmp,
-    .gif). A file given more than once in a call (e.g. by the patterns *.heic
+    extension of the format (.jpg, .png, .webp, .avif, .heic, .jxl, .tif,
+    .bmp, .gif). A file given more than once in a call (e.g. by the patterns *.heic
     and IMG_*) is converted or described once. A conversion never overwrites
     its source file or a file written earlier in the same call, also not when
     the folder is reached through another path (a junction, a symbolic link,
@@ -54,14 +58,17 @@ METADATA
 
         Jpeg, Png         EXIF, XMP, IPTC, ICC colour profile, comments
         WebP, Avif        EXIF, XMP, ICC colour profile
+        Heic              Windows, Linux: EXIF, XMP, ICC colour profile;
+                          macOS: no EXIF or XMP, the ICC colour profile is
+                          passed to ImageIO (see WRITING HEIC)
         Jxl               EXIF, XMP; ICC colour profile only at -Quality 100
         Tiff              XMP, IPTC, ICC colour profile, comments
         Gif               IPTC, ICC colour profile (browsers ignore it in
                           GIF files), comments
         Bmp               ICC colour profile
 
-    Tiff, Gif and Bmp output gets no EXIF data (date taken, camera, GPS
-    location); a warning is written for every source with EXIF data unless
+    Tiff, Gif and Bmp output (and Heic output on macOS) gets no EXIF data
+    (date taken, camera, GPS location); a warning is written for every source with EXIF data unless
     -StripMetadata is used.
     -StripMetadata removes EXIF (including the GPS location), XMP, IPTC and
     comments but keeps the ICC colour profile.
@@ -91,8 +98,8 @@ METADATA
 
     Grey images with a grey ICC profile (e.g. Photoshop's 'Dot Gain 20%' or
     'Gray Gamma 1.8', scanned greyscale) keep their grey pixels and the
-    profile in Jpeg, Png, Tiff and lossless Jxl output. WebP, Avif, Bmp and
-    Gif store grey pixels as RGB, for which a grey profile is not valid, so
+    profile in Jpeg, Png, Tiff and lossless Jxl output. WebP, Avif, Heic, Bmp
+    and Gif store grey pixels as RGB, for which a grey profile is not valid, so
     the pixels are converted to sRGB first. This includes a grey JPEG XL with
     a grey profile, which ImageMagick reads as RGB.
 
@@ -101,7 +108,7 @@ METADATA
     pixels of a grey JPEG, while Windows (Photos, Explorer) rejects it. Such
     a profile is kept, except where the file could not be written or would
     look different with it: it is left out of lossless Jxl output and, as a
-    grey profile on colour pixels, out of Avif and Bmp output, and out of
+    grey profile on colour pixels, out of Avif, Heic and Bmp output, and out of
     Jpeg, Png and Tiff output when the colour pixels are all neutral grey
     (these formats store them as grey). Neutral grey pixels with an RGB
     profile (a black-and-white photo in Adobe RGB) are stored as RGB in Jpeg,
@@ -116,7 +123,8 @@ METADATA
     their CMYK profile.
 
     Jpeg has no transparency: transparent and half-transparent pixels are
-    placed on a white background (paper white for a CMYK image). The other
+    placed on a white background (paper white for a CMYK image). So does
+    Heic output on Windows, whose encoder takes opaque pixels only. The other
     formats keep the alpha channel (Gif only fully transparent or opaque
     pixels).
 
@@ -134,8 +142,62 @@ FRAMES AND DAMAGED FILES
     decoder reports it like a file that is cut off. Other ImageMagick
     warnings about a source go to the verbose stream.
 
-    Writing HEIC files is not supported yet, because the bundled ImageMagick
-    build does not contain an HEVC encoder. AVIF is the closest alternative.
+WRITING HEIC
+    HEVC, the codec of HEIC, is covered by patent pools, and shipping an HEVC
+    encoder would pass their licensing duties on to every user, so the module
+    ships none. ConvertTo-Heic and -Format Heic use the encoder of the
+    operating system:
+
+        Windows 10 1809+  the WIC HEIF encoder; install the 'HEVC Video
+                          Extensions' from the Microsoft Store (and the
+                          'HEIF Image Extension' if it is missing)
+        macOS 10.13+      ImageIO; nothing to install, but the Mac needs an
+                          HEVC encoder (virtual machines often have none)
+        Linux             libheif 1.12 or later with its HEVC encoder x265
+                          (built in or as a plugin):
+                          Ubuntu 24.04 and 26.04, Debian 13:
+                            sudo apt install libheif1 libheif-plugin-x265
+                          Ubuntu 22.04, Debian 12: sudo apt install libheif1
+                          Fedora: enable RPM Fusion free
+                            (https://rpmfusion.org), then
+                            sudo dnf install libheif-freeworld
+                          Arch: sudo pacman -S libheif
+                          Alpine: apk add libheif libheif-x265
+
+    The first HEIC conversion in a session checks with a small test image
+    that the encoder works; after installing one, start a new session. When
+    it is missing, the call stops before any file is read, also with -WhatIf,
+    with one terminating error HeicEncoderNotAvailable that says what to
+    install. -Format Avif stores AV1 in the same HEIF container and needs
+    nothing installed.
+
+    Windows and Linux keep EXIF and XMP as they are (the EXIF orientation is
+    set to 1) and the ICC colour profile; macOS writes no EXIF or XMP and
+    passes the ICC colour profile to ImageIO. Windows stores no alpha channel
+    (transparent pixels are placed on white, as for Jpeg); Linux keeps it,
+    macOS passes it to ImageIO. An image the encoder rejects fails with
+    ImageWriteFailed: on Windows a side longer than 22528 pixels; on Linux a
+    side longer than 32768 pixels, or one shorter than 32 pixels next to one
+    longer than 4096. The macOS encoder has not run on a Mac yet.
+
+    Windows' own viewer (Photos, Explorer) does not show a HEIC image with a
+    side shorter than 8 pixels, whichever program wrote it, ignores the alpha
+    channel of a HEIC file, and does not open HEIC files written on Linux
+    that are larger than 8 megapixels (the module encodes them in several
+    slices, which Magick.NET needs for large files) or that have a side
+    longer than 16384 pixels. At -Quality 90 HEIC files are larger than
+    JPEG files at 90 (about 1.1 to 2 times on Windows, 2.4 to 3.4 times with
+    x265 on Linux); -Quality 60 to 80 gives about the size of JPEG at 90.
+    Like AVIF and WebP, HEIC stores colour at half resolution (4:2:0), so
+    thin coloured lines blur slightly.
+
+    In a container that denies the NUMA memory-policy calls (Docker's
+    default seccomp profile), x265 writes harmless lines such as
+    'set_mempolicy: Operation not permitted' to the console, which
+    PowerShell cannot redirect; docker run --cap-add SYS_NICE avoids them.
+    On Arch Linux, libheif writes 'dlopen: ... cannot open shared object
+    file' lines for plugins whose optional libraries are not installed;
+    they are harmless too.
 
 ERRORS
     Errors about a file are non-terminating: the cmdlets continue with the
@@ -165,7 +227,8 @@ ERRORS
                                 e.g. in pwsh -NonInteractive; use
                                 -Confirm:$false
         ImageReadFailed         the source cannot be read
-        ImageWriteFailed        the output cannot be written, or the
+        ImageWriteFailed        the output cannot be written (also when
+                                the HEIC encoder rejects the image), or the
                                 destination folder cannot be created or
                                 written to
 
@@ -185,8 +248,10 @@ ERRORS
     DestinationNotDirectory (the path or one of its parent folders is a file,
     a junction or symbolic link whose target does not exist, or a link that
     cannot be resolved, such as one that points to itself); the target object
-    is the -DestinationPath value. A relative path that climbs above
-    the root of its drive stays at the root, as in other cmdlets. A folder
+    is the -DestinationPath value. -Format Heic on a computer without a
+    working HEVC encoder stops the call the same way with
+    HeicEncoderNotAvailable (target object Heic). A relative path that climbs
+    above the root of its drive stays at the root, as in other cmdlets. A folder
     that does not exist yet is created when the first file is written; when
     that fails (no permission, a read-only file system) or the folder cannot
     be written to, each file gets ImageWriteFailed.
@@ -195,7 +260,8 @@ ERRORS
     a single Convert-Image, so the errors it finds have the
     FullyQualifiedErrorId '<Id>,Convert-Image'. The checks they make before
     carry their own name: the -DestinationPath errors of every one of them,
-    and the input errors (PathNotFound, InvalidWildcardPattern,
+    HeicEncoderNotAvailable of ConvertTo-Heic and ConvertFrom-Heic, and the
+    input errors (PathNotFound, InvalidWildcardPattern,
     UnsupportedProvider, NotHeicFile) of ConvertFrom-Heic. With
     Import-Module -Prefix, the errors raised inside Convert-Image during such
     a call keep the module's unprefixed name ',Convert-Image', while a direct
@@ -255,6 +321,8 @@ EXAMPLES
 
     PS C:\> ConvertTo-Avif -Path .\IMG_1234.HEIC -StripMetadata
 
+    PS C:\> ConvertTo-Heic -Path .\export\*.png -Quality 80
+
     PS C:\> Convert-Image -Path C:\Pictures\*.png -Format Tiff -WhatIf
 
     PS C:\> Get-ChildItem -Path C:\Pictures -Filter *.heic | Get-ImageInfo
@@ -274,4 +342,4 @@ SEE ALSO
     - https://github.com/dlemstra/Magick.NET
 
 KEYWORDS
-    HEIC, HEIF, Image, Conversion, JPEG, PNG, WebP, AVIF, JpegXL, ImageMagick
+    HEIC, HEIF, HEVC, Image, Conversion, JPEG, PNG, WebP, AVIF, JpegXL, ImageMagick
