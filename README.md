@@ -9,11 +9,13 @@ Cross-platform PowerShell 7 module for converting images — HEIC/HEIF photos fr
 
 ## Installation
 
+PSImageConverter is published on the [PowerShell Gallery](https://www.powershellgallery.com/packages/PSImageConverter/):
+
 ```powershell
 Install-Module -Name PSImageConverter -Scope CurrentUser
 ```
 
-Pre-releases are published from the `dev` branch (e.g. `0.2.0-preview0007`):
+Pre-releases are published from the `dev` branch (e.g. `0.2.0-preview0013`). There is no stable release yet, so for now install a pre-release:
 
 ```powershell
 Install-Module -Name PSImageConverter -Scope CurrentUser -AllowPrerelease
@@ -131,7 +133,7 @@ One call never overwrites a file it wrote itself, and without `-Force` it never 
 
 ## Development
 
-The module is built with [Sampler](https://github.com/gaelcolas/Sampler). See [CLAUDE.md](CLAUDE.md) for the build commands and conventions.
+The module is built with [Sampler](https://github.com/gaelcolas/Sampler). Development happens on the [`dev`](https://github.com/fasteiner/PSImageConverter/tree/dev) branch, from which every pre-release is built; `main` gets the code with each stable release. See [CLAUDE.md](https://github.com/fasteiner/PSImageConverter/blob/dev/CLAUDE.md) for the build commands and conventions.
 
 ```powershell
 .\build.ps1 -ResolveDependency -Tasks build, test
