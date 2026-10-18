@@ -87,7 +87,7 @@ function Convert-Image
         e.g. Display P3) keep their colours; lossy Jxl output stores no ICC profile and gets
         sRGB pixels instead, and a grey image with a grey profile gets sRGB pixels in WebP,
         Avif, Bmp and Gif output, with the sRGB profile except in Gif. A profile that cannot
-        be applied or does not match the pixels can be left out (see NOTES).
+        be applied or written, or does not match the pixels, can be left out (see NOTES).
 
         .PARAMETER Force
         Overwrites output files that existed before the call, also read-only or hidden ones.
@@ -164,10 +164,20 @@ function Convert-Image
         Firefox applies such a profile, and profiles with gamma or parametric curves (Adobe
         RGB, Display P3) work in both.
 
+        Bytes after the size the header of an ICC profile declares are not part of the profile
+        (Samsung Galaxy HEIC photos, for example, have two zero bytes there, and so do JPEGs
+        converted from them). The profile is written without them in every output format, with
+        unchanged colours; -Verbose says so. The Png encoder refuses a profile with such bytes.
+
         An ICC profile that the colour engine cannot apply, because it is damaged (e.g. cut
-        short) or names an unknown colour space, is left out of every output; -Verbose says
-        so. Viewers ignore it in the source, Png and lossless Jxl output could not be written
-        with it, and Chrome and Edge would not display an Avif that carries it.
+        short inside its tag data) or names an unknown colour space, is left out of every
+        output; -Verbose says so. Viewers ignore it in the source, Png and lossless Jxl output
+        could not be written with it, and Chrome and Edge would not display an Avif that
+        carries it. A profile that the colour engine can apply but the Png or lossless Jxl
+        encoder cannot write (e.g. a version 4 profile whose length is not a multiple of 4, a
+        header that declares a few more bytes than the profile has although all its tags are
+        complete, or, for Jxl, a rendering intent above 3) is left out of that output only,
+        so the file is still written; -Verbose says so.
 
         Grey images with a grey ICC profile (e.g. Photoshop's 'Dot Gain 20%' or 'Gray Gamma
         1.8', scanned greyscale) keep their grey pixels and the profile in Jpeg, Png, Tiff and

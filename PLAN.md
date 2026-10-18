@@ -37,6 +37,11 @@ After the fixes from the step-2c review (same setup, not in CI yet):
 - Windows: 1086 tests pass, 4 skipped, coverage 98.24 % (966 commands, still the 17 missed commands of the coverage note in step 2).
 - Linux: 1068 pass, 19 skipped, coverage 97.72 % (22 missed: the import-time code, the wrapper script blocks and the stream dispose as on Windows, plus Windows-only branches: platform detection, file identity, restoring the attributes of a hidden target, the path-comparer fallback, the Windows wording of hidden items and the Registry case of `Get-ImageConverterPathNotFoundMessage`).
 
+Fix after preview 0.2.0-preview0013 (ICC profile length; local run on Windows, not in CI yet):
+
+- Png output failed with `ImageWriteFailed` ("Incorrect data in iCCP") when the ICC profile has bytes after the size its header declares, as Samsung Galaxy HEIC photos have (two zero bytes in the `colr` box) and the JPEGs the module wrote from them; the bundled libpng refuses such a profile since 1.6.47. A profile that passes the lcms check is then cut to its declared size for every format (`Get-ImageConverterTrimmedColorProfile`, which cuts nothing when the declared size ends inside the tag table; `RemoveProfile` then `SetProfile` through `Invoke-ImageConverterMethod`, so pixels and `icc:*` properties stay, and a profile `SetProfile` refuses is left out like one lcms cannot apply). Checking first matters: `SetProfile` throws for a profile lcms cannot open, which made such files fail with `ImageWriteFailed` instead of being written without the profile. A profile that lcms applies but the Png or lossless Jxl encoder refuses (a version 4 length that is not a multiple of 4, a declared size above the length, a Jxl rendering intent above 3) is found by writing one pixel and left out of that output with a verbose message.
+- Windows: 1166 tests pass, 4 skipped, coverage 98.31 % (1007 commands, still the 17 missed commands of the coverage note in step 2).
+
 ## 1. Rename module to PSImageConverter ✅
 
 Done. Native loading uses the DllImport resolver on every platform now; `SetNativeLibraryDirectory` is gone. Initialisation runs under a process-wide lock (concurrent first imports in thread jobs broke Magick.NET for the whole process).

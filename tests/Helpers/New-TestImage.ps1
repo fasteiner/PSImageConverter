@@ -723,10 +723,12 @@ function Get-TestStoredColorLayout
         Reads from the bytes of an image file how it stores its pixels and which ICC profile it embeds.
 
         .DESCRIPTION
-        Returns Channels ('Grey', 'RGB' or 'CMYK': how the file stores the pixels) and
+        Returns Channels ('Grey', 'RGB' or 'CMYK': how the file stores the pixels),
         ProfileSpace (the data colour space of the embedded ICC profile, 'GRAY', 'RGB' or
-        'CMYK', or $null without a profile), read from the file structure, not through
-        ImageMagick, whose readback reports grey files of some formats as sRGB. Supported:
+        'CMYK', or $null without a profile) and ProfileData (the embedded ICC profile bytes as
+        stored, or $null), read from the file structure, not through ImageMagick, whose
+        readback reports grey files of some formats as sRGB and whose PNG and BMP readers cut
+        the profile to the size its header declares. Supported:
         JPEG (SOF components, APP2 ICC_PROFILE), PNG (IHDR colour type, iCCP), WebP (ICCP;
         always RGB), AVIF (av1C mono_chrome, colr 'prof'), TIFF (PhotometricInterpretation,
         tag 34675), BMP (V5 header with an embedded profile; always RGB) and GIF (ICCRGBG1
@@ -958,5 +960,6 @@ function Get-TestStoredColorLayout
     [PSCustomObject] @{
         Channels     = $channels
         ProfileSpace = $profileSpace
+        ProfileData  = $iccData
     }
 }
