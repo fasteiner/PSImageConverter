@@ -15,7 +15,7 @@ PSImageConverter is published on the [PowerShell Gallery](https://www.powershell
 Install-Module -Name PSImageConverter -Scope CurrentUser
 ```
 
-Pre-releases are published from the `dev` branch (e.g. `0.2.0-preview0013`). There is no stable release yet, so for now install a pre-release:
+Pre-releases are published from the `dev` branch and contain the changes since the last release:
 
 ```powershell
 Install-Module -Name PSImageConverter -Scope CurrentUser -AllowPrerelease
