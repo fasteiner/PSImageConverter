@@ -16,5 +16,10 @@ markdownissues.txt
 node_modules
 package-lock.json
 
-# Magick.NET binaries are downloaded at build time (see .build/Get-MagickNet.build.ps1)
+# Build output: Magick.NET is downloaded (.build/Get-MagickNet.build.ps1) and PSImageConverter.Helper.dll
+# is compiled (.build/Build-Helper.build.ps1) into source/lib at build time.
 source/lib/
+
+# A manual dotnet build in helper/ writes bin and obj there (the Build_Helper task writes them below output/).
+helper/bin/
+helper/obj/
