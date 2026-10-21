@@ -5,6 +5,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The test workflow uploads its results with `actions/upload-artifact` v7 instead of v4, which runs on Node.js 24.
+
 ## [0.2.0] - 2026-10-21
 
 ### Added
